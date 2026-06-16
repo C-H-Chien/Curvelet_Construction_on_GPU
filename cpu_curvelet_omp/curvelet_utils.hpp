@@ -22,13 +22,14 @@ float sq_norm(const point_2d& A)
 }
 */
 //: Convert an angle to [0, 2Pi) range
-float To2Pi (float angle)
+template<typename T>
+T To2Pi(T angle)
 {
-  float a;
-  if (angle>=2*M_PI)
-    a = fmod(angle,2*M_PI);
+  T a;
+  if (angle>=T(2)*T(M_PI))
+    a = std::fmod(angle, T(2)*T(M_PI));
   else if (angle < 0)
-    a = (2*M_PI+fmod(angle,2*M_PI));
+    a = (T(2)*T(M_PI)+std::fmod(angle, T(2)*T(M_PI)));
   else 
     a= angle;
 
@@ -37,7 +38,7 @@ float To2Pi (float angle)
   // then after all the computation, we get
   // a = 6.2831853071795862 == 2*vnl_math::pi !!!!!!!
   // the only case this can happen is when a is very close to zero.
-  if (!(a>=0 && a<2*M_PI)) {
+  if (!(a>=0 && a<T(2)*T(M_PI))) {
     a = 0;
   }
 
@@ -45,24 +46,26 @@ float To2Pi (float angle)
 }
 
 //: Convert an angle to [-Pi, Pi) range
-float ToPi (float angle)
+template<typename T>
+T ToPi(T angle)
 {
-    float a = angle+M_PI;
+    T a = angle+T(M_PI);
     a = To2Pi(a);
     
-    return a-M_PI;
+    return a-T(M_PI);
 }
 
 template<typename T>
 T angle_from_pt_to_pt (T x1, T y1, T x2, T y2)
 {
-  return To2Pi (atan2(y2 - y1, x2 - x1) );
+  return To2Pi (std::atan2(y2 - y1, x2 - x1) );
 }
 
 //: dot product between two angle
-float dot (float v1, float v2)
+template<typename T>
+T dot (T v1, T v2)
 {
-  return cos(v1)*cos(v2) + sin(v1)*sin(v2);
+  return std::cos(v1)*std::cos(v2) + std::sin(v1)*std::sin(v2);
 }
 /*
 //: rotate a vector by theta

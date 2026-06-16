@@ -19,7 +19,7 @@
 
 // Edge Chains
 #define edge_chain_target(i, j)     edge_chain_target[(i) * (_group_max_sz+1) + (j)]
-#define edge_chain_final(i, j)       edge_chain_final[(i) * (_group_max_sz+1) + (j)]
+#define edge_chain_final(i, j)       _edge_chain_final[(i) * (_group_max_sz+1) + (j)]
 
 
 #endif // INDICES_HPP

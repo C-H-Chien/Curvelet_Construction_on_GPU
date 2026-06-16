@@ -67,26 +67,34 @@ protected:
 public:
     T *_edgeLookList;
     int omp_threads;
+    unsigned _num_curvelets;
+    unsigned _max_curvelets;
+    unsigned *_edge_chain_final;
     
     // > constructor
     CurveletCPU(int &num_edges, int &sz_edge_data, T *edgeLookList, int max_LookEdgeNum,
+                int edgeLookList_src_stride,
                 T dx, T dt, T sx, T st, T max_k, unsigned group_max_sz, int nthreads):
                 _num_edges(num_edges), _sz_edge_data(sz_edge_data), _max_num_look_edges(max_LookEdgeNum),
-                _dx(dx), _dt(dt), _sx(sx), _st(st), _max_k(max_k), _group_max_sz(group_max_sz), omp_threads(nthreads)
+                _dx(dx), _dt(dt), _sx(sx), _st(st), _max_k(max_k), _group_max_sz(group_max_sz), omp_threads(nthreads),
+                _num_curvelets(0),
+                _max_curvelets((unsigned)num_edges * (unsigned)(max_LookEdgeNum + 1) * 2)
     {
-        //_edgeLookList = edgeLookList;
+        _edge_chain_final = new unsigned[ _max_curvelets * (_group_max_sz + 1) ];
         _edgeLookList = new T[(_sz_edge_data+1) * (_max_num_look_edges+1) * _num_edges ];
-        //> assign edgeLookList to edgeLookList_fit
-        for (unsigned i = 0; i < _num_edges; i++) {
-            for (unsigned j = 0; j < (_max_num_look_edges+1)*5; j++) {
-                _edgeLookList(i, j) = edgeLookList(i, j);
+        const unsigned dst_cols = (unsigned)(_sz_edge_data + 1) * (unsigned)(_max_num_look_edges + 1);
+        for (unsigned i = 0; i < (unsigned)_num_edges; i++) {
+            for (unsigned j = 0; j < dst_cols; j++) {
+                _edgeLookList(i, j) = edgeLookList[i * edgeLookList_src_stride + j];
             }
         }
 
-        //> 1) calculate number of curves in a bundle in terms of pixel and theta
         curves_num_in_bundle_pixel = 2*floor( _dx/_sx + 0.5 ) + 1;
         curves_num_in_bundle_theta = 2*floor( _dt/_st + 0.5 ) + 1;
     }
+
+    unsigned num_curvelets() const { return _num_curvelets; }
+    unsigned chain_width() const { return _group_max_sz + 1; }
 
     // > destructor
     ~CurveletCPU();
@@ -104,6 +112,8 @@ public:
     void bundle_intersection( T* cmp_bundle_min_ks, T* cmp_bundle_max_ks, T* intersect_bundle_min_ks, T* intersect_bundle_max_ks );
     bool bundle_intersection_valid_check( T* intersect_bundle_min_ks, T* intersect_bundle_max_ks );
     bool check_curvelet_exist( unsigned edge_chain_on_the_fly_sz, unsigned* edge_chain_on_the_fly, unsigned* edge_chain_target );
+    void chain_push_front( unsigned* chain, unsigned &lidx, unsigned id );
+    void record_curvelet_chain( unsigned te_id, unsigned* chain, unsigned chain_sz );
 };
 
 template<typename T>
@@ -151,16 +161,44 @@ void CurveletCPU<T>::retrieve_edge_data_from_edgeLookList(unsigned target_idx, u
 }
 
 template<typename T>
+void CurveletCPU<T>::chain_push_front( unsigned* chain, unsigned &lidx, unsigned id )
+{
+    if (lidx >= _group_max_sz) {
+        return;
+    }
+    for (int k = (int)lidx; k > 0; k--) {
+        chain[k] = chain[k - 1];
+    }
+    chain[0] = id;
+    lidx++;
+}
+
+template<typename T>
+void CurveletCPU<T>::record_curvelet_chain( unsigned te_id, unsigned* chain, unsigned chain_sz )
+{
+    #pragma omp critical(curvelet_merge)
+    {
+        if (_num_curvelets < _max_curvelets) {
+            const unsigned row = _num_curvelets++;
+            for (unsigned j = 0; j < (_group_max_sz + 1); j++) {
+                edge_chain_final(row, j) = 0;
+            }
+            edge_chain_final(row, 0) = te_id + 1;
+            for (unsigned i = 0; i < chain_sz && (i + 1) < (_group_max_sz + 1); i++) {
+                edge_chain_final(row, i + 1) = chain[i] + 1;
+            }
+        }
+    }
+}
+
+template<typename T>
 void CurveletCPU<T>::build_curvelets_greedy( )
 {
-    // > Process to build curvelets in a greedy way:
-    // > 1) loop over all target edges, and form pairs of curves from target edges and look edges
-    // > 2) examine all pairs of curves by intersection to gradually build a curve with maximal grouping size of 7 edges
-    
-    //> loop over all target edges
+    _num_curvelets = 0;
+
     omp_set_num_threads(omp_threads);
     double start = omp_get_wtime();
-    #pragma omp parallel shared(_edgeLookList)
+    #pragma omp parallel
     {
         //> declare local arrays
         T *bundle_min_ks;
@@ -195,12 +233,8 @@ void CurveletCPU<T>::build_curvelets_greedy( )
         bool valid_bundle_intersection = false;
         int valid_edge_num = 0;
         unsigned edge_chain_target_idx = 0;
-        unsigned last_edge_chain_target_idx = 0;
         unsigned edge_chain_lidx = 0;
 
-        unsigned DEBUG_TE_ID = 20837;
-
-        //> initialize local variables
         //> target edge information
         T te_id = 0;
         T te_pt_x = 0;
@@ -228,11 +262,11 @@ void CurveletCPU<T>::build_curvelets_greedy( )
             //  each time goes different direction
             for (unsigned f_run = 0; f_run < 2; f_run++) {
 
-                //> refresh data
                 edge_chain_target_idx = 0;
+                // cvlet_style=2 (anchor-leading bidirectional): ref_first is always true
+                const bool ref_first = true;
 
-                //> loop over all associated look edges (maximal _max_num_look_edges look edges), create pair-wise curvelet bundles
-                for (unsigned le_idx = 0; le_idx < _max_num_look_edges; le_idx++) {
+                for (unsigned le_idx = 0; le_idx < (unsigned)_max_num_look_edges; le_idx++) {
 
                     //> retrieve look edge data
                     retrieve_edge_data_from_edgeLookList(te_idx, le_idx+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
@@ -251,13 +285,13 @@ void CurveletCPU<T>::build_curvelets_greedy( )
                     const T _dir = angle_from_pt_to_pt(te_pt_x, te_pt_y, le_pt_x, le_pt_y);
 
                     //> first try: forward == true && leading == true
-                    if ((f_run == 0) && (dot(_dir, le_orient) > 0)) {
+                    if ((f_run == 0) && (dot(_dir, te_orient) > 0)) {
                         //> create curve bundles between the target edge and all the look edges
                         valid_bundle_created = compute_curve_bundle( te_idx, le_idx, bundle_min_ks, bundle_max_ks, hyp_LookEdge, te_pt_x, te_pt_y, le_pt_x, le_pt_y, te_orient, le_orient );
                         valid_edge_num++;
                         //T* bundle_min_ks, T* bundle_max_ks, bool* hyp_LookEdge
                     }
-                    else if ((f_run == 1) && (dot(_dir, le_orient) < 0)) {
+                    else if ((f_run == 1) && (dot(_dir, te_orient) < 0)) {
                         valid_bundle_created = compute_curve_bundle( te_idx, le_idx, bundle_min_ks, bundle_max_ks, hyp_LookEdge, te_pt_x, te_pt_y, le_pt_x, le_pt_y, te_orient, le_orient );
                         valid_edge_num++;
                     }
@@ -336,42 +370,33 @@ void CurveletCPU<T>::build_curvelets_greedy( )
                 //> now, for each pair-wise curvelet bundle hypothesis formed w.r.t. the target edge,
                 //  fix one and examine curve bundle intersections with all the rest,
                 //  and loop over all the look edges to do the same procedure
-                for (unsigned le_idx = 0; le_idx < _max_num_look_edges; le_idx++) {
+                for (unsigned le_idx = 0; le_idx < (unsigned)_max_num_look_edges; le_idx++) {
 
-                    //> refresh data
                     edge_chain_lidx = 0;
 
-                    //> if the edge is valid
                     if (hyp_LookEdge[le_idx]) {
 
-                        //> put the target edge id in the edge chain list
-                        //edge_chain(edge_chain_tidx, edge_chain_lidx) = te_id;
-                        //edge_chain_lidx++;
+                        edge_chain_on_the_fly[ edge_chain_lidx++ ] = (unsigned)te_id;
 
-                        //> keep the curvelet bundle
                         move_to_cmp_bundle( 0, le_idx, false, bundle_min_ks, bundle_max_ks, cmp_bundle_min_ks, cmp_bundle_max_ks,
                                             intersect_bundle_min_ks, intersect_bundle_max_ks );
 
-                        //> loop over the rest of the hypothesis
-                        for (unsigned le_remain_idx = 0; le_remain_idx < _max_num_look_edges; le_remain_idx++) {
+                        for (unsigned le_remain_idx = 0; le_remain_idx < (unsigned)_max_num_look_edges; le_remain_idx++) {
 
-                            //> if the look edge is valid
                             if (hyp_LookEdge[le_remain_idx]) {
 
-                                //> retrieve all the valid look edges
                                 retrieve_edge_data_from_edgeLookList(te_idx, le_remain_idx+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
 
-                                //> put the reference edge id to the edge chain list
                                 if (le_idx == le_remain_idx) {
 
-                                    //> put the look edge id to the edge chain list
-                                    //edge_chain(edge_chain_tidx, edge_chain_lidx) = le_id;
-                                    //edge_chain_lidx++;
-                                    edge_chain_on_the_fly[ edge_chain_lidx ] = le_id;
-                                    edge_chain_lidx++;
+                                    if (ref_first) {
+                                        edge_chain_on_the_fly[ edge_chain_lidx++ ] = (unsigned)le_id;
+                                    } 
+                                    else {
+                                        chain_push_front(edge_chain_on_the_fly, edge_chain_lidx, (unsigned)le_id);
+                                    }
 
-                                    //> continue looping if the edge chain is not filled entirely by edge ids
-                                    if (edge_chain_lidx == (_group_max_sz-1)) {
+                                    if (edge_chain_lidx >= _group_max_sz) {
                                         break;
                                     }
                                     else {
@@ -379,41 +404,28 @@ void CurveletCPU<T>::build_curvelets_greedy( )
                                     }
                                 }
 
-                                //> keep the curvelet bundle
                                 move_to_cmp_bundle( 1, le_remain_idx, false, bundle_min_ks, bundle_max_ks, cmp_bundle_min_ks, cmp_bundle_max_ks,
                                                     intersect_bundle_min_ks, intersect_bundle_max_ks );
 
-                                //> find bundle intersections: the absolute min and max curvatures
                                 bundle_intersection(cmp_bundle_min_ks, cmp_bundle_max_ks, intersect_bundle_min_ks, intersect_bundle_max_ks);
 
-                                //> check whether the intersected bundle is valid or not
                                 valid_bundle_intersection = bundle_intersection_valid_check(intersect_bundle_min_ks, intersect_bundle_max_ks);
 
-                                //> if the intersection is valid
                                 if (valid_bundle_intersection) {
 
-                                    //> put the look edge id to the edge chain list
-                                    //edge_chain(edge_chain_tidx, edge_chain_lidx) = le_id;
-                                    //edge_chain_lidx++;
-                                    edge_chain_on_the_fly[ edge_chain_lidx ] = le_id;
-                                    edge_chain_lidx++;
+                                    if (ref_first) {
+                                        edge_chain_on_the_fly[ edge_chain_lidx++ ] = (unsigned)le_id;
+                                    } else {
+                                        chain_push_front(edge_chain_on_the_fly, edge_chain_lidx, (unsigned)le_id);
+                                    }
 
-                                    //> change the cmp_bundle set by putting in the intersected bundle
                                     move_to_cmp_bundle( 0, le_remain_idx, true, bundle_min_ks, bundle_max_ks, cmp_bundle_min_ks, cmp_bundle_max_ks,
                                                         intersect_bundle_min_ks, intersect_bundle_max_ks );
                                 }
 
-                                //> continue looping if the edge chain is not filled entirely by edge ids
-                                if (edge_chain_lidx == (_group_max_sz-1)) {
+                                if (edge_chain_lidx >= _group_max_sz) {
                                     break;
                                 }
-                                else {
-                                    continue;
-                                }
-
-                            }
-                            else {
-                                continue;
                             }
                         }
                     }
@@ -421,105 +433,25 @@ void CurveletCPU<T>::build_curvelets_greedy( )
                         continue;
                     }
 
-                    //> DEBUG!!!!! Print edge_chain_on_the_fly arrays
-                    #if 1
-                    if (te_id == DEBUG_TE_ID) {
-                        std::cout<<le_idx<<": ";
-                        for (unsigned di = 0; di < _group_max_sz; di++) {
-                            std::cout<<edge_chain_on_the_fly[di]<<"  ";
-                        }
-                        std::cout<<std::endl;
-                    }
-                    #endif
-                    
-                    //> Should this edge chain be kept or not?
-                    //  This is examined by: i) edge chain size > 2, and
-                    //                      ii) curvelet does not exist before
-                    // EDGE_CHAIN_TARGET: (# of rows: _max_num_look_edges; # of cols: _group_max_sz + 1)
-                    // | le_id11 | le_id12 | ... | # of le_ids in this chain |
-                    // | le_id21 | le_id22 | ... | # of le_ids in this chain |
-                    // | ...     | ...     | ... | ...                       |
                     if (edge_chain_lidx > 2 && !check_curvelet_exist(edge_chain_lidx, edge_chain_on_the_fly, edge_chain_target)) {
                         
-                        //> add the edge_chain_on_the_fly to edge_chain_target
                         for (unsigned chain_idx = 0; chain_idx < edge_chain_lidx; chain_idx++) {
                             edge_chain_target(edge_chain_target_idx, chain_idx) = edge_chain_on_the_fly[chain_idx];
                         }
 
-                        //> keep the vliad edge chain size at the end
                         edge_chain_target(edge_chain_target_idx, _group_max_sz) = edge_chain_lidx;
                         edge_chain_target_idx++;
+
+                        record_curvelet_chain((unsigned)te_id, edge_chain_on_the_fly, edge_chain_lidx);
                     }
 
-                    //> refresh the edge_chain_on_the_fly
                     for (unsigned i = 0; i < _group_max_sz; i++) {
                         edge_chain_on_the_fly[i] = 0;
                     }
                     
-                } //> for loop over all l_id
-
-                //> move edge_chain_target to edge_chain_final
-                // EDGE_CHAIN_FINAL: (# of rows: num_of_te * _max_num_look_edges; # of cols: _group_max_sz + 1)
-                // | te_id1 | le_id11 | le_id12 | ...  |
-                // | te_id2 | le_id21 | le_id22 | ...  |
-                // | ...    | ...     | ...     | ...  |
-                /*unsigned target_chain_idx = 0;
-                unsigned edge_chain_size = 0;
-                unsigned echain_final_ridx = 2;
-                for (unsigned i = last_edge_chain_target_idx; i < (last_edge_chain_target_idx + edge_chain_target_idx); i++) {
-                    edge_chain_final(i, 0) = te_id;
-
-                    edge_chain_size = edge_chain_target(target_chain_idx, _group_max_sz);
-
-                    //> 1st run, go one direction
-                    if (f_run == 0) {
-
-                        edge_chain_final(i, 1) = te_id;
-                        echain_final_ridx = 2;
-
-                        for (unsigned j = 0; j < _group_max_sz; j++) {
-                            edge_chain_final(i, echain_final_ridx) = edge_chain_target(target_chain_idx, j);
-                            echain_final_ridx++;
-                        }
-                    }
-                    else if (f_run == 1) {
-                        //> DEBUG!!!!!!!!!!!!!!!!
-                        #if 0
-                        if (te_id == DEBUG_TE_ID) {
-                            std::cout<<"edge_chain_size = "<<edge_chain_size<<std::endl;
-                        }
-                        #endif
-
-                        echain_final_ridx = 1;
-
-                        for (int j = (edge_chain_size-1); j >= 0; j--) {
-                            #if 0
-                            if (te_id == DEBUG_TE_ID) {
-                                std::cout<<edge_chain_target(target_chain_idx, j)<<"  "<<echain_final_ridx<<"  "<<j<<std::endl;
-                            }
-                            #endif
-                            edge_chain_final(i, echain_final_ridx) = edge_chain_target(target_chain_idx, j);
-                            echain_final_ridx++;
-                        }
-
-                        //std::cout<<"=== MAKE IT HERE? ======"<<std::endl;
-                        edge_chain_final(i, echain_final_ridx) = te_id;
-                    }
-                    target_chain_idx++;
                 }
-                
-                //> update last_edge_chain_target_idx
-                last_edge_chain_target_idx += edge_chain_target_idx;
-*/
-                //> DEBUG!!!!!!!!!!!!!!!!
-                #if 0
-                if (te_id == DEBUG_TE_ID) {
-                    std::cout<<"last_edge_chain_target_idx = "<<last_edge_chain_target_idx<<std::endl;
-                }
-                #endif
 
-                //> refresh data for the use of new target edges
-                for (unsigned i = 0; i < _max_num_look_edges; i++) {
+                for (unsigned i = 0; i < (unsigned)_max_num_look_edges; i++) {
                     for (unsigned j = 0; j < (curves_num_in_bundle_pixel * curves_num_in_bundle_theta) ; j++) {
                         bundle_min_ks(i, j) = -_max_k;
                         bundle_max_ks(i, j) = _max_k;
@@ -564,6 +496,7 @@ void CurveletCPU<T>::build_curvelets_greedy( )
 
     double curvelet_build_time = omp_get_wtime() - start;
     std::cout<<"- Time of curvelet building (OpenMP): "<<curvelet_build_time*1000<<" (ms)"<<std::endl;
+    std::cout<<"- Number of curvelets formed: "<<_num_curvelets<<std::endl;
 }
 
 //> compute the max and min curvature of the curve bundle from a pair of edges
@@ -703,12 +636,12 @@ bool CurveletCPU<T>::compute_curve_bundle( unsigned te_idx, unsigned le_idx, T* 
                 tt = sin(T2t) * DX - cos(T2t) * DY;
                 ttmdx2 = tt - delta_x2;
 
-                //> k_max / k_min equation denominator w.r.t. pixel
-                eq_denom = (-2.0 * delta_x2 * tt + DX2 + DY2 - _dx2 + delta_x2 * delta_x2);
+                //> k_max / k_min equation denominator w.r.t. pixel (alternate transport branch)
+                eq_denom = -(2.0 * delta_x2 * tt - DX2 - DY2 + _dx2 - delta_x2 * delta_x2) / 2.0;
 
                 //> max and min curvatures in terms of pixel
-                k_dx_min = 2.0 * (ttmdx2 - _dx) / eq_denom;
-                k_dx_max = 2.0 * (ttmdx2 + _dx) / eq_denom;
+                k_dx_min = (ttmdx2 - _dx) / eq_denom;
+                k_dx_max = (ttmdx2 + _dx) / eq_denom;
 
                 //> compute the intersection of all surfaces
                 //> 1) min
@@ -729,17 +662,13 @@ bool CurveletCPU<T>::compute_curve_bundle( unsigned te_idx, unsigned le_idx, T* 
                 cos_T0mdt_times_DX     = DX * cos(T0_m_dt);
                 
                 //> max and min curvatures in terms of orientation
-                k_dt_max = sin_t2_p_dt2_m_t0_m_dt/ (-sin_t2_p_dt2_m_t0_m_dt * delta_x2 + cos_T0mdt_times_DX + sin_T0mdt_times_DY);
-                k_dt_min = sin_t2_p_dt2_m_t0_p_dt/ (-sin_t2_p_dt2_m_t0_p_dt * delta_x2 + cos_T0pdt_times_DX + sin_T0pdt_times_DY);
-
-                //> compute the intersection of all surfaces
-                //> 1) min
-                if ( bundle_min_ks(le_idx, bk_idx) < k_dt_min )
-                    bundle_min_ks(le_idx, bk_idx) = k_dt_min;
-                
-                //> 2) max
+                k_dt_max = sin_t2_p_dt2_m_t0_m_dt / (-sin_t2_p_dt2_m_t0_m_dt * delta_x2 + cos_T0mdt_times_DX + sin_T0mdt_times_DY);
                 if ( bundle_max_ks(le_idx, bk_idx) > k_dt_max )
                     bundle_max_ks(le_idx, bk_idx) = k_dt_max;
+
+                k_dt_min = sin_t2_p_dt2_m_t0_p_dt / (-sin_t2_p_dt2_m_t0_p_dt * delta_x2 + cos_T0pdt_times_DX + sin_T0pdt_times_DY);
+                if ( bundle_min_ks(le_idx, bk_idx) < k_dt_min )
+                    bundle_min_ks(le_idx, bk_idx) = k_dt_min;
 
                 bk_idx++;
             }
@@ -836,7 +765,7 @@ bool CurveletCPU<T>::check_curvelet_exist( unsigned edge_chain_on_the_fly_sz, un
         if (edge_chain_sz == edge_chain_on_the_fly_sz) {
 
             for (unsigned chain_idx = 0; chain_idx < edge_chain_on_the_fly_sz; chain_idx++) {
-                cvlet_exists = cvlet_exists && (edge_chain_on_the_fly[chain_idx] == edge_chain_target[chain_idx]);
+                cvlet_exists = cvlet_exists && (edge_chain_on_the_fly[chain_idx] == edge_chain_target(i, chain_idx));
             }
 
             //> cvlet_exists remains true only if all the edgel ids in edge chains match
@@ -855,17 +784,7 @@ bool CurveletCPU<T>::check_curvelet_exist( unsigned edge_chain_on_the_fly_sz, un
 template<typename T>
 CurveletCPU<T>::~CurveletCPU() {
     delete[] _edgeLookList;
-    /*delete[] bundle_min_ks;
-    delete[] bundle_max_ks;
-    delete[] cmp_bundle_min_ks;
-    delete[] cmp_bundle_max_ks;
-    delete[] intersect_bundle_min_ks;
-    delete[] intersect_bundle_max_ks;
-    delete[] hyp_LookEdge;
-
-    delete[] edge_chain_on_the_fly;
-    delete[] edge_chain_target;*/
-    //delete[] edge_chain_final;
+    delete[] _edge_chain_final;
 }
 
 #endif // CPU_CURVELET_HPP
