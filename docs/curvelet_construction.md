@@ -2,17 +2,6 @@
 
 A **curvelet**, or **curvel**, is a short chain of third-order edges that are geometrically consistent: they can be explained by a single smooth, local curve segment with bounded curvature uncertainty. The input is a list of third-order edges (subpixel positions and orientation); the output is a list of edge chains (curvelets).
 
-## Repository layout
-
-| Folder | Description |
-|--------|------|
-| `original_code/` | Reference C++ from the official released code of the paper |
-| `cpu_curvelet/` | Rewritten CPU version (flat arrays) with OpenMP support |
-| `gpu_curvelet/` | (NOT COMPLETE) GPU port of the rewrite |
-| `test_files/` | Sample third-order edge files |
-
-The rewrite (`cpu_curvelet`) keeps the same core math and replaces object-heavy curve-bundle and curvelet storage (`edgemap`, `curveletmap`, `CC_curve_model_3d`) with flat arrays in the construction kernel — the main step needed for the GPU port in `gpu_curvelet/`. Preprocessing still uses CPU-side maps and heap-allocated `edgel` pointers (`preprocess.hpp`).
-
 ## High-level pipeline
 
 ```
