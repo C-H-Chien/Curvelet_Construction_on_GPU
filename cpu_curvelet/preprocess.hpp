@@ -129,14 +129,10 @@ protected:
     int _num_edges;
     unsigned _look_slots;
 
-/*private:
-    T *unsorted_edgeLookList;          //< temporarily stored unordered look edge list
-    unsigned *ordered_le_idx_by_dist;    //< ordered list of look edge index sorted by the squared distance w.r.t. the target edge
-*/
 public:
-    // > constructor
+    //> constructor
     edgeNeighborList(int &img_width, int &img_height, int &num_edges, int &sz_edge_data,
-                     T *to_edges, int group_mask_sz, const T &rad, unsigned look_slots = 32):
+                     T *to_edges, int group_mask_sz, const T &rad, unsigned look_slots = 64):
         _edgeMap(num_edges, sz_edge_data, to_edges),
         img_h((unsigned)img_height), img_w((unsigned)img_width),
         _rad(rad), _num_edges(num_edges), _sz_edge_data(sz_edge_data), _look_slots(look_slots)
@@ -144,13 +140,9 @@ public:
         // 7x7 spatial bucket (reg=3), matches original form_curvelet_process.cpp
         (void)group_mask_sz;
         nr = 3;
-        //_edgeMap.print_map();
-
-        //unsorted_edgeLookList = new T[(_sz_edge_data+1) * 32 * _num_edges ];
-        //ordered_le_idx_by_dist = new unsigned[ 32 ];
     }
 
-    // > destructor
+    //> destructor
     ~edgeNeighborList() {}
 
     unsigned edge_look_stride() const
@@ -174,7 +166,6 @@ public:
         const unsigned stride = edge_look_stride();
         const T rad_sqr = _rad * _rad;
         unsigned LookEdgeIdx = 1;
-        //unsigned max_LookEdgeNum = 0;
         T dist_betwee_te_and_le;
 
         max_LookEdgeNum = 0;
@@ -192,7 +183,7 @@ public:
 
             LookEdgeIdx = 0;
 
-            // > loop over the 7x7 neighbor
+            //> loop over the 7x7 neighbor
             for (unsigned p = x - nr; p <= (x + nr); p++) {
                 for (unsigned q = y - nr; q <= (y + nr); q++) {
 

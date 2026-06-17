@@ -14,6 +14,7 @@
 #include <string.h>
 #include <vector>
 #include <ctime>
+#include <filesystem>
 #include "Array.hpp"
 #include "form_curvelet_process.hpp"
 #include "curvelet_utils.hpp"
@@ -75,7 +76,14 @@ void write_double_array_to_file(std::string filename, double *wr_data, int first
 #define wr_data(i, j) wr_data[(i) * second_dim + (j)]
 
     std::cout<<"writing data to a file "<<filename<<" ..."<<std::endl;
-    std::string out_file_name = "../../outputs/";
+    const std::filesystem::path out_dir = "../outputs";
+    std::error_code ec;
+    std::filesystem::create_directories(out_dir, ec);
+    if (ec) {
+        std::cerr << "Failed to create output directory " << out_dir << ": " << ec.message() << std::endl;
+        return;
+    }
+    std::string out_file_name = out_dir.string() + "/";
     out_file_name.append(filename);
 	std::ofstream out_file;
     out_file.open(out_file_name);
@@ -98,7 +106,14 @@ void write_int_array_to_file(std::string filename, int *wr_data, int first_dim, 
 #define wr_data(i, j) wr_data[(i) * second_dim + (j)]
 
     std::cout<<"writing data to a file "<<filename<<" ..."<<std::endl;
-    std::string out_file_name = "../outputs/";
+    const std::filesystem::path out_dir = "../outputs";
+    std::error_code ec;
+    std::filesystem::create_directories(out_dir, ec);
+    if (ec) {
+        std::cerr << "Failed to create output directory " << out_dir << ": " << ec.message() << std::endl;
+        return;
+    }
+    std::string out_file_name = out_dir.string() + "/";
     out_file_name.append(filename);
 	std::ofstream out_file;
     out_file.open(out_file_name);
@@ -220,7 +235,7 @@ int main(int argc, char **argv)
     }
 */
     write_int_array_to_file("chain_original.txt", chain._data, out_h, out_w);
-    // write_double_array_to_file("info.txt", info._data, info_w, out_h);
+    write_double_array_to_file("info.txt", info._data, out_h, info_w);
 
     delete[] TOED_edges;
     delete[] out_info;

@@ -3,17 +3,17 @@
 #LIBDIR=-L${CUDADIR}/lib64
 #LIB=-lcudart
 
-#OPENMP = -fopenmp
+OPENMP = -fopenmp
 
 #NVCCFLAGS  = -O3  -Xcompiler "-fPIC -Wall -Wno-unused-function -Wno-strict-aliasing" -std=c++11
 #NVCCFLAGS += -gencode arch=compute_70,code=sm_70
 #NVCCFLAGS += -gencode arch=compute_80,code=sm_80
 
 curvelet: main.o   
-	g++ -o CURVELET main.o 
+	g++ ${OPENMP} -o CURVELET main.o 
 
 main.o: main.cpp
-	g++ -c main.cpp -O3 -o main.o
+	g++ ${OPENMP} -c main.cpp -O3 -o main.o
 
 clean:
 	rm -f curvelet *.o
