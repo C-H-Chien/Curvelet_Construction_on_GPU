@@ -49,6 +49,11 @@ protected:
 
     //> used for building bundles
     T _max_k;
+    T _nrad;
+    T _token_len;
+    T *_to_edges;
+
+    static const unsigned CURVELET_INFO_WIDTH = 10;
 
 //private:
     
@@ -72,18 +77,22 @@ public:
     unsigned _max_per_anchor;
     unsigned *_anchor_chain_count;
     unsigned *_edge_chain_final;
+    double *_curvelet_info;
     
     //> constructor
     CurveletCPU(int &num_edges, int &sz_edge_data, T *edgeLookList, int max_LookEdgeNum,
                 int edgeLookList_src_stride,
-                T dx, T dt, T sx, T st, T max_k, unsigned group_max_sz, int nthreads):
+                T dx, T dt, T sx, T st, T max_k, unsigned group_max_sz, int nthreads,
+                T *to_edges, T nrad, T token_len):
                 _num_edges(num_edges), _sz_edge_data(sz_edge_data), _max_num_look_edges(max_LookEdgeNum),
-                _dx(dx), _dt(dt), _sx(sx), _st(st), _max_k(max_k), _group_max_sz(group_max_sz), omp_threads(nthreads),
+                _dx(dx), _dt(dt), _sx(sx), _st(st), _max_k(max_k), _nrad(nrad), _token_len(token_len),
+                _to_edges(to_edges), _group_max_sz(group_max_sz), omp_threads(nthreads),
                 _num_curvelets(0),
                 _max_per_anchor((unsigned)(max_LookEdgeNum + 1) * 2),
                 _max_curvelets((unsigned)num_edges * (unsigned)(max_LookEdgeNum + 1) * 2)
     {
         _edge_chain_final = new unsigned[ _max_curvelets * (_group_max_sz + 1) ];
+        _curvelet_info = new double[ _max_curvelets * CURVELET_INFO_WIDTH ]();
         _anchor_chain_count = new unsigned[ _num_edges ];
         for (int i = 0; i < _num_edges; i++) {
             _anchor_chain_count[i] = 0;
@@ -121,7 +130,12 @@ public:
     bool bundle_intersection_valid_check( T* intersect_bundle_min_ks, T* intersect_bundle_max_ks );
     bool check_curvelet_exist( unsigned edge_chain_on_the_fly_sz, unsigned* edge_chain_on_the_fly, unsigned* edge_chain_target );
     void chain_push_front( unsigned* chain, unsigned &lidx, unsigned id );
-    void record_curvelet_chain( unsigned te_id, unsigned* chain, unsigned chain_sz );
+    void record_curvelet_chain( unsigned te_id, unsigned* chain, unsigned chain_sz, bool forward,
+                                T ref_pt_x, T ref_pt_y, T ref_theta,
+                                T* cmp_bundle_min_ks, T* cmp_bundle_max_ks );
+    void fill_curvelet_info( unsigned row, bool forward, T ref_pt_x, T ref_pt_y, T ref_theta,
+                             T* cmp_bundle_min_ks, T* cmp_bundle_max_ks,
+                             unsigned* chain, unsigned chain_sz );
 };
 
 template<typename T>
@@ -182,7 +196,72 @@ void CurveletCPU<T>::chain_push_front( unsigned* chain, unsigned &lidx, unsigned
 }
 
 template<typename T>
-void CurveletCPU<T>::record_curvelet_chain( unsigned te_id, unsigned* chain, unsigned chain_sz )
+void CurveletCPU<T>::fill_curvelet_info( unsigned row, bool forward, T ref_pt_x, T ref_pt_y, T ref_theta,
+                                         T* cmp_bundle_min_ks, T* cmp_bundle_max_ks,
+                                         unsigned* chain, unsigned chain_sz )
+{
+    T mind = T(100);
+    unsigned mini = 0;
+    unsigned minj = 0;
+    for (unsigned ii = 0; ii < curves_num_in_bundle_pixel; ii++) {
+        for (unsigned jj = 0; jj < curves_num_in_bundle_theta; jj++) {
+            const unsigned bidx = ii * curves_num_in_bundle_theta + jj;
+            if (cmp_bundle_max_ks(0, bidx) > cmp_bundle_min_ks(0, bidx)) {
+                const T ddx = _sx * (T(ii) - (T(curves_num_in_bundle_pixel) - T(1)) / T(2));
+                const T ddt = _st * (T(jj) - (T(curves_num_in_bundle_theta) - T(1)) / T(2));
+                const T d = ddx * ddx + ddt * ddt;
+                if (d < mind) {
+                    mind = d;
+                    mini = ii;
+                    minj = jj;
+                }
+            }
+        }
+    }
+
+    const unsigned best_bidx = mini * curves_num_in_bundle_theta + minj;
+    const T k_max = cmp_bundle_max_ks(0, best_bidx);
+    const T k_min = cmp_bundle_min_ks(0, best_bidx);
+    const T k = (k_max + k_min) / T(2);
+    const T dx = _sx * (T(mini) - (T(curves_num_in_bundle_pixel) - T(1)) / T(2));
+    const T dt = _st * (T(minj) - (T(curves_num_in_bundle_theta) - T(1)) / T(2));
+    const T theta = To2Pi(ref_theta + dt);
+    const T pt_x = ref_pt_x - dx * std::sin(theta);
+    const T pt_y = ref_pt_y + dx * std::cos(theta);
+
+    T length = T(0);
+    for (unsigned i = 0; i + 1 < chain_sz; i++) {
+        const unsigned e1 = chain[i];
+        const unsigned e2 = chain[i + 1];
+        const T x1 = _to_edges[e1 * _sz_edge_data + 0];
+        const T y1 = _to_edges[e1 * _sz_edge_data + 1];
+        const T x2 = _to_edges[e2 * _sz_edge_data + 0];
+        const T y2 = _to_edges[e2 * _sz_edge_data + 1];
+        length += std::sqrt(sq_dist(x1, y1, x2, y2));
+    }
+
+    const T alpha3 = T(1);
+    const T alpha4 = T(1);
+    const T quality = (length > T(0) && chain_sz > 0)
+        ? T(2) / (alpha3 * _nrad / length + alpha4 * length / _token_len / T(chain_sz))
+        : T(0);
+
+    _curvelet_info[0 * _max_curvelets + row] = forward ? 1.0 : 0.0;
+    _curvelet_info[1 * _max_curvelets + row] = (double)k_max;
+    _curvelet_info[2 * _max_curvelets + row] = (double)k_min;
+    _curvelet_info[3 * _max_curvelets + row] = (double)ref_theta;
+    _curvelet_info[4 * _max_curvelets + row] = (double)pt_x;
+    _curvelet_info[5 * _max_curvelets + row] = (double)pt_y;
+    _curvelet_info[6 * _max_curvelets + row] = (double)theta;
+    _curvelet_info[7 * _max_curvelets + row] = (double)k;
+    _curvelet_info[8 * _max_curvelets + row] = (double)length;
+    _curvelet_info[9 * _max_curvelets + row] = (double)quality;
+}
+
+template<typename T>
+void CurveletCPU<T>::record_curvelet_chain( unsigned te_id, unsigned* chain, unsigned chain_sz, bool forward,
+                                            T ref_pt_x, T ref_pt_y, T ref_theta,
+                                            T* cmp_bundle_min_ks, T* cmp_bundle_max_ks )
 {
     // Per-anchor slots preserve greedy seed order within each anchor; compact by te_id after the parallel loop.
     unsigned &n = _anchor_chain_count[te_id];
@@ -198,6 +277,9 @@ void CurveletCPU<T>::record_curvelet_chain( unsigned te_id, unsigned* chain, uns
     for (unsigned i = 0; i < chain_sz && (i + 1) < (_group_max_sz + 1); i++) {
         edge_chain_final(row, i + 1) = chain[i] + 1;
     }
+
+    fill_curvelet_info(row, forward, ref_pt_x, ref_pt_y, ref_theta,
+                       cmp_bundle_min_ks, cmp_bundle_max_ks, chain, chain_sz);
 }
 
 template<typename T>
@@ -212,6 +294,9 @@ void CurveletCPU<T>::compact_curvelet_output()
             if (dst != src) {
                 for (unsigned j = 0; j < row_width; j++) {
                     edge_chain_final(dst, j) = edge_chain_final(src, j);
+                }
+                for (unsigned col = 0; col < CURVELET_INFO_WIDTH; col++) {
+                    _curvelet_info[col * _max_curvelets + dst] = _curvelet_info[col * _max_curvelets + src];
                 }
             }
             dst++;
@@ -466,7 +551,9 @@ void CurveletCPU<T>::build_curvelets_greedy( )
                         edge_chain_target(edge_chain_target_idx, _group_max_sz) = edge_chain_lidx;
                         edge_chain_target_idx++;
 
-                        record_curvelet_chain((unsigned)te_id, edge_chain_on_the_fly, edge_chain_lidx);
+                        record_curvelet_chain((unsigned)te_id, edge_chain_on_the_fly, edge_chain_lidx,
+                                              f_run == 0, te_pt_x, te_pt_y, te_orient,
+                                              cmp_bundle_min_ks, cmp_bundle_max_ks);
                     }
 
                     for (unsigned i = 0; i < _group_max_sz; i++) {
@@ -815,6 +902,7 @@ CurveletCPU<T>::~CurveletCPU() {
     delete[] _edgeLookList;
     delete[] _anchor_chain_count;
     delete[] _edge_chain_final;
+    delete[] _curvelet_info;
 }
 
 #endif // CPU_CURVELET_HPP
