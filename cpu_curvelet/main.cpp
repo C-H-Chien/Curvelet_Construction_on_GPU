@@ -13,36 +13,12 @@
 #include <fstream>
 #include <string>
 #include <cstring>
+#include <cstdlib>
 #include <vector>
 #include <ctime>
 
 #include "preprocess.hpp"
 #include "cpu_curvelet.hpp"
-
-/*************************************************************
-Usage: 
- [chain, info] = form_curvelet_mex(edgeinfo, nrows, ncols,...
- rad, gap, dx, dt, token_len, max_k, cvlet_type, ...
- max_size_to_goup, output_type)
-Input:
-        edgeinfo: nx4 array storing the position, orientation
- and magnitude information;
-        nrows: height of the image;
-        ncols: width of the image;
-        rad: radius of the grouping neighborhood around each
- edgel;
-        gap: distance between two consecutive edges in a link;
-        dx: position uncertainty at the reference edgel;
-        dt: orientation uncertainty at the reference edgel;
-        token_len:
-        max_k: maximum curvature of curves in the curve bundle;
-        cvlet_type: if 0, form regular anchor centered curvelet;
- if 1, anchor centered bidirectional; if 2, anchor leading bidirectional;
- if 3, ENO style (anchor leading or trailing but in the same direction).
-        max_size_to_goup: the maximum numbers of edges to group;
-        output_type: if 0, out put curvelet map. if 1, out put
- the curve fragment map. if 2, out put the poly arc map.
- *************************************************************/
 
 template<typename T>
 void read_TO_edges_from_file(std::string filename, T *rd_data, int first_dim, int second_dim)
@@ -97,11 +73,11 @@ const char* scalar_name()
 }
 
 template<typename T>
-void run_curvelet(const std::string &out_chain_file)
+void run_curvelet(const std::string &out_chain_file, int nthreads)
 {
     const T PI = T(3.14159265358979323846);
 
-    // -- input settings (match original_code / cpu_curvelet_omp for comparison)
+    // -- input settings (match original_code / cpu_curvelet for comparison)
     int height = 800;
     int width = 800;
     T nrad = T(3.5);
@@ -116,7 +92,7 @@ void run_curvelet(const std::string &out_chain_file)
     unsigned max_LookEdgeNum = 0;
     T sx = T(0.1);
     T st = T(0.08);
-    const unsigned LOOK_EDGE_SLOTS = 32;
+    const unsigned LOOK_EDGE_SLOTS = 64;
 
     int edge_num = 3965;
     int edge_data_sz = 4;
@@ -129,25 +105,23 @@ void run_curvelet(const std::string &out_chain_file)
     // read third-order edges from file
     read_TO_edges_from_file("TO_edges_ABC_0006_thresh1.txt", TOED_edges, edge_num, edge_data_sz);
 
-    //std::cout<<TOED_edges[0]<<"  "<<TOED_edges[1]<<"  "<<TOED_edges[2]<<std::endl;
-
     // ------------------------------------------------------------------
-    // > preprocessings ...
-    const unsigned edge_look_stride = (edge_data_sz + 1) * LOOK_EDGE_SLOTS;
-    T *edgeLookList = new T[edge_look_stride * edge_num];
+    //> preprocessings ...
+    const int edgeLookList_src_stride = (edge_data_sz + 1) * (int)LOOK_EDGE_SLOTS;
+    T *edgeLookList = new T[edgeLookList_src_stride * edge_num];
 
     //edgeNeighborList( int &neighbor_sz, const T &rad):
 
-    // > 1) construct edge maps and edge lists
+    //> 1) construct edge maps and edge lists
     edgeNeighborList<T> edgeLookListObj( width, height, edge_num, edge_data_sz, TOED_edges, group_max_sz, nrad, LOOK_EDGE_SLOTS );
     edgeLookListObj.init_edgeLookList( edgeLookList );
     edgeLookListObj.create_edgeLookList( edgeLookList, max_LookEdgeNum );
 
     //std::cout<<"maxmial number of look edges (from main) = "<<max_LookEdgeNum<<std::endl;
 
-    // > 2) build curvelet
-    CurveletCPU<T> CurveletCPU_obj( edge_num, edge_data_sz, edgeLookList, max_LookEdgeNum, dx, dt, sx, st, max_k, group_max_sz);
-    CurveletCPU_obj.preprocessing();
+    //> 2) build curvelet
+    CurveletCPU<T> CurveletCPU_obj( edge_num, edge_data_sz, edgeLookList, max_LookEdgeNum,
+                                    edgeLookList_src_stride, dx, dt, sx, st, max_k, group_max_sz, nthreads);
     CurveletCPU_obj.build_curvelets_greedy();
 
     const unsigned out_h = CurveletCPU_obj.num_curvelets();
@@ -162,6 +136,9 @@ void run_curvelet(const std::string &out_chain_file)
     }
     write_int_array_to_file(out_chain_file, out_chain, out_h, out_w);
 
+    // edgeMap _edgeMap(width, height, edge_num, edge_data_sz, TOED_edges);
+    // _edgeMap.print_map();
+
     delete[] TOED_edges;
     delete[] edgeLookList;
     delete[] out_chain;
@@ -174,6 +151,7 @@ void run_curvelet(const std::string &out_chain_file)
 
 int main(int argc, char **argv)
 {
+    int nthreads = 1;
     bool use_double = true;
     std::string out_file = "chain_cpu.txt";
 
@@ -181,18 +159,27 @@ int main(int argc, char **argv)
         if (std::strcmp(argv[i], "--float") == 0) {
             use_double = false;
             out_file = "chain_cpu_float.txt";
-        } else if (std::strcmp(argv[i], "--double") == 0) {
+        } 
+        else if (std::strcmp(argv[i], "--double") == 0) {
             use_double = true;
             out_file = "chain_cpu_double.txt";
-        } else if (std::strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
+        } 
+        else if (std::strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
             out_file = argv[++i];
+        } 
+        else if (std::strcmp(argv[i], "--nthreads") == 0 && i + 1 < argc) {
+            nthreads = std::atoi(argv[++i]);
+        }
+        else {
+            std::cerr << "Unknown argument: " << argv[i] << std::endl;
+            return 1;
         }
     }
 
     if (use_double)
-        run_curvelet<double>(out_file);
+        run_curvelet<double>(out_file, nthreads);
     else
-        run_curvelet<float>(out_file);
+        run_curvelet<float>(out_file, nthreads);
 
     return 0;
 }

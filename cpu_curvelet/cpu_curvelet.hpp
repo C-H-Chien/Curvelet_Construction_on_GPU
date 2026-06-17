@@ -9,6 +9,8 @@
 #include <iostream>
 #include <cmath>
 
+#include <omp.h>
+
 #include "indices.hpp"
 #include "curvelet_utils.hpp"
 
@@ -21,35 +23,36 @@ protected:
     unsigned _group_max_sz;
     int _max_num_look_edges;
 
-    // > target edge information
+/*    //> target edge information
     T te_id;
     T te_pt_x;
     T te_pt_y;
     T te_orient;
     T te_grad_mag; 
 
-    // > look edge information
+    //> look edge information
     T le_id;
     T le_pt_x;
     T le_pt_y;
     T le_orient;
     T le_grad_mag;
+*/
 
     T _dx; //< variation of edge in pixel
     T _dt; //< variation of angle in radians
     T _sx; //< sample pixel
     T _st; //< sample angle in radians
 
-    // > number of curves in a bundle in terms of location and orientation variations
+    //> number of curves in a bundle in terms of location and orientation variations
     unsigned curves_num_in_bundle_pixel;
     unsigned curves_num_in_bundle_theta;
 
-    // > used for building bundles
+    //> used for building bundles
     T _max_k;
 
-private:
+//private:
     
-    T *bundle_min_ks;
+    /*T *bundle_min_ks;
     T *bundle_max_ks;
     T *cmp_bundle_min_ks;
     T *cmp_bundle_max_ks;
@@ -57,73 +60,74 @@ private:
     T *intersect_bundle_max_ks;
 
     bool *hyp_LookEdge;
+    unsigned *edge_chain_final;         //< store all final curvelets by edge ids
     unsigned *edge_chain_on_the_fly;    //< store a curvelet candidate on the fly
-    unsigned *edge_chain_target;        //< store curvelets w.r.t. target edge
+    unsigned *edge_chain_target;        //< store curvelets w.r.t. target edge*/
 
 public:
     T *_edgeLookList;
+    int omp_threads;
     unsigned _num_curvelets;
     unsigned _max_curvelets;
+    unsigned _max_per_anchor;
+    unsigned *_anchor_chain_count;
     unsigned *_edge_chain_final;
     
-    // > constructor
+    //> constructor
     CurveletCPU(int &num_edges, int &sz_edge_data, T *edgeLookList, int max_LookEdgeNum,
-                T dx, T dt, T sx, T st, T max_k, unsigned group_max_sz):
+                int edgeLookList_src_stride,
+                T dx, T dt, T sx, T st, T max_k, unsigned group_max_sz, int nthreads):
                 _num_edges(num_edges), _sz_edge_data(sz_edge_data), _max_num_look_edges(max_LookEdgeNum),
-                _dx(dx), _dt(dt), _sx(sx), _st(st), _max_k(max_k), _group_max_sz(group_max_sz),
+                _dx(dx), _dt(dt), _sx(sx), _st(st), _max_k(max_k), _group_max_sz(group_max_sz), omp_threads(nthreads),
                 _num_curvelets(0),
+                _max_per_anchor((unsigned)(max_LookEdgeNum + 1) * 2),
                 _max_curvelets((unsigned)num_edges * (unsigned)(max_LookEdgeNum + 1) * 2)
     {
         _edge_chain_final = new unsigned[ _max_curvelets * (_group_max_sz + 1) ];
-        //_edgeLookList = edgeLookList;
+        _anchor_chain_count = new unsigned[ _num_edges ];
+        for (int i = 0; i < _num_edges; i++) {
+            _anchor_chain_count[i] = 0;
+        }
         _edgeLookList = new T[(_sz_edge_data+1) * (_max_num_look_edges+1) * _num_edges ];
-        //> assign edgeLookList to edgeLookList_fit
-        for (unsigned i = 0; i < _num_edges; i++) {
-            for (unsigned j = 0; j < (_max_num_look_edges+1)*5; j++) {
-                _edgeLookList(i, j) = edgeLookList(i, j);
+        const unsigned dst_cols = (unsigned)(_sz_edge_data + 1) * (unsigned)(_max_num_look_edges + 1);
+        for (unsigned i = 0; i < (unsigned)_num_edges; i++) {
+            for (unsigned j = 0; j < dst_cols; j++) {
+                _edgeLookList(i, j) = edgeLookList[i * edgeLookList_src_stride + j];
             }
         }
 
-        //> 1) calculate number of curves in a bundle in terms of pixel and theta
         curves_num_in_bundle_pixel = 2*floor( _dx/_sx + 0.5 ) + 1;
         curves_num_in_bundle_theta = 2*floor( _dt/_st + 0.5 ) + 1;
-
-        bundle_min_ks = new T[ _max_num_look_edges * curves_num_in_bundle_pixel * curves_num_in_bundle_theta ];
-        bundle_max_ks = new T[ _max_num_look_edges * curves_num_in_bundle_pixel * curves_num_in_bundle_theta ];
-
-        cmp_bundle_min_ks = new T[ 2 * curves_num_in_bundle_pixel * curves_num_in_bundle_theta ];
-        cmp_bundle_max_ks = new T[ 2 * curves_num_in_bundle_pixel * curves_num_in_bundle_theta ];
-
-        intersect_bundle_min_ks = new T[ curves_num_in_bundle_pixel * curves_num_in_bundle_theta ];
-        intersect_bundle_max_ks = new T[ curves_num_in_bundle_pixel * curves_num_in_bundle_theta ];
-
-        hyp_LookEdge = new bool[ _max_num_look_edges ];
-        edge_chain_on_the_fly = new unsigned[ _group_max_sz ];
-        edge_chain_target     = new unsigned[ (_group_max_sz+1) * _max_num_look_edges ];
     }
 
     unsigned num_curvelets() const { return _num_curvelets; }
     unsigned chain_width() const { return _group_max_sz + 1; }
 
-    // > destructor
+    //> destructor
     ~CurveletCPU();
 
-    void preprocessing();
+    void preprocessing(T* bundle_min_ks, T* bundle_max_ks, bool* hyp_LookEdge, unsigned* edge_chain_on_the_fly, unsigned* edge_chain_target);
     void build_curvelets_greedy();
-    bool compute_curve_bundle( unsigned te_idx, unsigned le_idx );
-    bool bundle_valid_check( unsigned le_idx );
+    void compact_curvelet_output();
+    bool compute_curve_bundle( unsigned te_idx, unsigned le_idx, T* bundle_min_ks, T* bundle_max_ks, bool* hyp_LookEdg, 
+                               T te_pt_x, T te_pt_y, T le_pt_x, T le_pt_y, T te_orient, T le_orient );
+    bool bundle_valid_check( unsigned le_idx, T* bundle_min_ks, T* bundle_max_ks );
     void retrieve_edge_data_from_edgeLookList(unsigned target_idx, unsigned look_idx, T &id, T &pt_x, T &pt_y, T &orient, T &strength);
 
-    void move_to_cmp_bundle( unsigned cmp_idx, unsigned le_idx, bool rep_by_intersection );
-    void bundle_intersection();
-    bool bundle_intersection_valid_check();
+    void move_to_cmp_bundle( unsigned cmp_idx, unsigned le_idx, bool rep_by_intersection, 
+                             T* bundle_min_ks, T* bundle_max_ks, T* cmp_bundle_min_ks, T* cmp_bundle_max_ks,
+                             T* intersect_bundle_min_ks, T* intersect_bundle_max_ks );
+    void bundle_intersection( T* cmp_bundle_min_ks, T* cmp_bundle_max_ks, T* intersect_bundle_min_ks, T* intersect_bundle_max_ks );
+    bool bundle_intersection_valid_check( T* intersect_bundle_min_ks, T* intersect_bundle_max_ks );
     bool check_curvelet_exist( unsigned edge_chain_on_the_fly_sz, unsigned* edge_chain_on_the_fly, unsigned* edge_chain_target );
     void chain_push_front( unsigned* chain, unsigned &lidx, unsigned id );
     void record_curvelet_chain( unsigned te_id, unsigned* chain, unsigned chain_sz );
 };
 
 template<typename T>
-void CurveletCPU<T>::preprocessing() {
+void CurveletCPU<T>::preprocessing( T* bundle_min_ks, T* bundle_max_ks, bool* hyp_LookEdge, 
+                                    unsigned* edge_chain_on_the_fly, unsigned* edge_chain_target ) 
+{
     
     for (unsigned i = 0; i < _max_num_look_edges; i++) {
         for (unsigned j = 0; j < (curves_num_in_bundle_pixel * curves_num_in_bundle_theta) ; j++) {
@@ -133,8 +137,6 @@ void CurveletCPU<T>::preprocessing() {
 
         hyp_LookEdge[i] = 0;
     }
-
-    //std::cout<<curves_num_in_bundle_pixel<<", "<<curves_num_in_bundle_theta<<std::endl;
 
     //> initialize edge_chain_on_the_fly
     for (unsigned i = 0; i < _group_max_sz; i++) {
@@ -147,6 +149,13 @@ void CurveletCPU<T>::preprocessing() {
             edge_chain_target(i, j) = 0;
         }
     }
+
+    //> initialize edge_chain_final
+    /*for (unsigned i = 0; i < _num_edges*_max_num_look_edges; i++) {
+        for (unsigned j = 0; j < (_group_max_sz+1); j++) {
+            edge_chain_final(i, j) = 0;
+        }
+    }*/
 }
 
 template<typename T>
@@ -175,11 +184,13 @@ void CurveletCPU<T>::chain_push_front( unsigned* chain, unsigned &lidx, unsigned
 template<typename T>
 void CurveletCPU<T>::record_curvelet_chain( unsigned te_id, unsigned* chain, unsigned chain_sz )
 {
-    if (_num_curvelets >= _max_curvelets) {
+    // Per-anchor slots preserve greedy seed order within each anchor; compact by te_id after the parallel loop.
+    unsigned &n = _anchor_chain_count[te_id];
+    if (n >= _max_per_anchor) {
         return;
     }
 
-    const unsigned row = _num_curvelets++;
+    const unsigned row = te_id * _max_per_anchor + n++;
     for (unsigned j = 0; j < (_group_max_sz + 1); j++) {
         edge_chain_final(row, j) = 0;
     }
@@ -190,257 +201,338 @@ void CurveletCPU<T>::record_curvelet_chain( unsigned te_id, unsigned* chain, uns
 }
 
 template<typename T>
+void CurveletCPU<T>::compact_curvelet_output()
+{
+    const unsigned row_width = _group_max_sz + 1;
+    unsigned dst = 0;
+    for (unsigned te = 0; te < (unsigned)_num_edges; te++) {
+        const unsigned n = _anchor_chain_count[te];
+        for (unsigned k = 0; k < n; k++) {
+            const unsigned src = te * _max_per_anchor + k;
+            if (dst != src) {
+                for (unsigned j = 0; j < row_width; j++) {
+                    edge_chain_final(dst, j) = edge_chain_final(src, j);
+                }
+            }
+            dst++;
+        }
+    }
+    _num_curvelets = dst;
+}
+
+template<typename T>
 void CurveletCPU<T>::build_curvelets_greedy( )
 {
-    // > Process to build curvelets in a greedy way:
-    // > 1) loop over all target edges, and form pairs of curves from target edges and look edges
-    // > 2) examine all pairs of curves by intersection to gradually build a curve with maximal grouping size of 7 edges
-
-    //> some variables
-    bool valid_bundle_created = false;
-    bool valid_bundle_intersection = false;
-    int valid_edge_num = 0;
-    unsigned edge_chain_target_idx = 0;
-    unsigned edge_chain_lidx = 0;
-
     _num_curvelets = 0;
+    for (int i = 0; i < _num_edges; i++) {
+        _anchor_chain_count[i] = 0;
+    }
 
-    unsigned DEBUG_TE_ID = 20837;
+    omp_set_num_threads(omp_threads);
+    double start = omp_get_wtime();
+    #pragma omp parallel
+    {
+        //> declare local arrays
+        T *bundle_min_ks;
+        T *bundle_max_ks;
+        T *cmp_bundle_min_ks;
+        T *cmp_bundle_max_ks;
+        T *intersect_bundle_min_ks;
+        T *intersect_bundle_max_ks;
 
-    //> loop over all target edges
-    for (unsigned te_idx = 0; te_idx < _num_edges; te_idx++) {
+        bool *hyp_LookEdge;
+        //unsigned *edge_chain_final;         //< store all final curvelets by edge ids
+        unsigned *edge_chain_on_the_fly;    //< store a curvelet candidate on the fly
+        unsigned *edge_chain_target;        //< store curvelets w.r.t. target edge
 
-        //> retrieve target edge data
-        retrieve_edge_data_from_edgeLookList(te_idx, 0, te_id, te_pt_x, te_pt_y, te_orient, te_grad_mag);
+        //> dynamically allocated arrays
+        bundle_min_ks = new T[ _max_num_look_edges * curves_num_in_bundle_pixel * curves_num_in_bundle_theta ];
+        bundle_max_ks = new T[ _max_num_look_edges * curves_num_in_bundle_pixel * curves_num_in_bundle_theta ];
 
-        //> for every target edge, try two times,
-        //  each time goes different direction
-        for (unsigned f_run = 0; f_run < 2; f_run++) {
+        cmp_bundle_min_ks = new T[ 2 * curves_num_in_bundle_pixel * curves_num_in_bundle_theta ];
+        cmp_bundle_max_ks = new T[ 2 * curves_num_in_bundle_pixel * curves_num_in_bundle_theta ];
 
-            //> refresh data
-            edge_chain_target_idx = 0;
-            // cvlet_style=2 (anchor-leading bidirectional): ref_first is always true
-            const bool ref_first = true;
+        intersect_bundle_min_ks = new T[ curves_num_in_bundle_pixel * curves_num_in_bundle_theta ];
+        intersect_bundle_max_ks = new T[ curves_num_in_bundle_pixel * curves_num_in_bundle_theta ];
 
-            //> loop over all associated look edges (maximal _max_num_look_edges look edges), create pair-wise curvelet bundles
-            for (unsigned le_idx = 0; le_idx < _max_num_look_edges; le_idx++) {
+        hyp_LookEdge          = new bool[ _max_num_look_edges ];
+        edge_chain_on_the_fly = new unsigned[ _group_max_sz ];
+        edge_chain_target     = new unsigned[ (_group_max_sz+1) * _max_num_look_edges ];
+        //edge_chain_final      = new unsigned[ (_num_edges*_max_num_look_edges) * (_group_max_sz+1) ];
 
-                //> retrieve look edge data
-                retrieve_edge_data_from_edgeLookList(te_idx, le_idx+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
-                if (le_id < 0)
-                    break;
+        //> some variables
+        bool valid_bundle_created = false;
+        bool valid_bundle_intersection = false;
+        int valid_edge_num = 0;
+        unsigned edge_chain_target_idx = 0;
+        unsigned edge_chain_lidx = 0;
 
-                //if ((f_run == 0) && te_id == DEBUG_TE_ID) {
-                    //std::cout<<"("<<te_id<<", "<<le_id<<")"<<std::endl;
-                //}
-                //> DEBUG!!!!!
-                /*if (te_id == DEBUG_TE_ID) {
-                    std::cout<<"("<<le_id<<", "<<le_idx<<")"<<std::endl;
-                }*/
+        //> target edge information
+        T te_id = 0;
+        T te_pt_x = 0;
+        T te_pt_y = 0;
+        T te_orient = 0;
+        T te_grad_mag = 0; 
 
-                //> compute the angle direction from target edge to look edges
-                const T _dir = angle_from_pt_to_pt(te_pt_x, te_pt_y, le_pt_x, le_pt_y);
+        //> look edge information
+        T le_id = 0;
+        T le_pt_x = 0;
+        T le_pt_y = 0;
+        T le_orient = 0;
+        T le_grad_mag = 0;
 
-                //> first try: forward == true && leading == true
-                if ((f_run == 0) && (dot(_dir, te_orient) > 0)) {
-                    //> create curve bundles between the target edge and all the look edges
-                    valid_bundle_created = compute_curve_bundle( te_idx, le_idx );
-                    valid_edge_num++;
-                    
-                }
-                else if ((f_run == 1) && (dot(_dir, te_orient) < 0)) {
-                    valid_bundle_created = compute_curve_bundle( te_idx, le_idx );
-                    valid_edge_num++;
-                }
-                else {
-                    continue;
-                }
+        //> initialize all local arrays of omp threads
+        preprocessing( bundle_min_ks, bundle_max_ks, hyp_LookEdge, edge_chain_on_the_fly, edge_chain_target);
 
-                //> DEBUG!!!!!
-                /*if ((f_run == 0) && te_idx == DEBUG_TE_ID && le_id == 9) {
-                    int count = 0;
-                    std::cout<<"le_idx = "<<le_idx<<std::endl;
-                    std::cout<<"valid_bundle_created = "<<valid_bundle_created<<std::endl;
-                    for (unsigned i = 0; i < curves_num_in_bundle_pixel*curves_num_in_bundle_theta; i++) {
-                        std::cout<<bundle_min_ks(0, i)<<","<<bundle_max_ks(0, i)<<"\t";
-                        count++;
-                        if (count == 7){
-                            std::cout<<std::endl;
-                            count = 0;
+        #pragma omp for schedule(dynamic)
+        for (unsigned te_idx = 0; te_idx < _num_edges; te_idx++) {
+
+            //> retrieve target edge data
+            retrieve_edge_data_from_edgeLookList(te_idx, 0, te_id, te_pt_x, te_pt_y, te_orient, te_grad_mag);
+
+            //> for every target edge, try two times,
+            //  each time goes different direction
+            for (unsigned f_run = 0; f_run < 2; f_run++) {
+
+                edge_chain_target_idx = 0;
+                // cvlet_style=2 (anchor-leading bidirectional): ref_first is always true
+                const bool ref_first = true;
+
+                for (unsigned le_idx = 0; le_idx < (unsigned)_max_num_look_edges; le_idx++) {
+
+                    //> retrieve look edge data
+                    retrieve_edge_data_from_edgeLookList(te_idx, le_idx+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
+                    if (le_id < 0)
+                        break;
+
+                    //> compute the angle direction from target edge to look edges
+                    const T _dir = angle_from_pt_to_pt(te_pt_x, te_pt_y, le_pt_x, le_pt_y);
+
+                    //> first try: forward == true && leading == true
+                    if ((f_run == 0) && (dot(_dir, te_orient) > 0)) {
+                        //> create curve bundles between the target edge and all the look edges
+                        valid_bundle_created = compute_curve_bundle( te_idx, le_idx, bundle_min_ks, bundle_max_ks, hyp_LookEdge, te_pt_x, te_pt_y, le_pt_x, le_pt_y, te_orient, le_orient );
+                        valid_edge_num++;
+                        //T* bundle_min_ks, T* bundle_max_ks, bool* hyp_LookEdge
+                    }
+                    else if ((f_run == 1) && (dot(_dir, te_orient) < 0)) {
+                        valid_bundle_created = compute_curve_bundle( te_idx, le_idx, bundle_min_ks, bundle_max_ks, hyp_LookEdge, te_pt_x, te_pt_y, le_pt_x, le_pt_y, te_orient, le_orient );
+                        valid_edge_num++;
+                    }
+                    else {
+                        continue;
+                    }
+
+                    //> DEBUG!!!!!
+                    /*if ((f_run == 0) && te_idx == DEBUG_TE_ID && le_id == 9) {
+                        int count = 0;
+                        std::cout<<"le_idx = "<<le_idx<<std::endl;
+                        std::cout<<"valid_bundle_created = "<<valid_bundle_created<<std::endl;
+                        for (unsigned i = 0; i < curves_num_in_bundle_pixel*curves_num_in_bundle_theta; i++) {
+                            std::cout<<bundle_min_ks(0, i)<<","<<bundle_max_ks(0, i)<<"\t";
+                            count++;
+                            if (count == 7){
+                                std::cout<<std::endl;
+                                count = 0;
+                            }
                         }
-                    }
-                }*/
-                
-            }   //> for loop over forming pairs of curve bundle
+                    }*/
+                    
+                }   //> for loop over forming pairs of curve bundle
 
-            //> DEBUG!!!!!!!
-            #if 0
-            if (te_id == DEBUG_TE_ID) {
-                std::cout<<"look edge id:   ";
-                for ( unsigned i = 0; i < _max_num_look_edges; i++ ) {
-                    if (hyp_LookEdge[i]) {
-                        retrieve_edge_data_from_edgeLookList(te_idx, i+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
-                        std::cout<<le_id<<"  ";
-                    }
-                }
-                std::cout<<std::endl;
-                std::cout<<"look edge indx: ";
-                for ( unsigned i = 0; i < _max_num_look_edges; i++ ) {
-                    if (hyp_LookEdge[i]) {
-                        retrieve_edge_data_from_edgeLookList(te_idx, i+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
-                        std::cout<<i<<"  ";
-                    }
-                }
-                std::cout<<std::endl;
-
-                if (f_run == 0) {
-                    for (unsigned l = 0; l < _max_num_look_edges; l++) {
-                        std::cout<<hyp_LookEdge[l]<<"  ";
+                //> DEBUG!!!!!!!
+                #if 0
+                if (te_id == DEBUG_TE_ID) {
+                    std::cout<<"look edge id:   ";
+                    for ( unsigned i = 0; i < _max_num_look_edges; i++ ) {
+                        if (hyp_LookEdge[i]) {
+                            retrieve_edge_data_from_edgeLookList(te_idx, i+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
+                            std::cout<<le_id<<"  ";
+                        }
                     }
                     std::cout<<std::endl;
-                }
-
-                //> Print curvature bundle
-                /*if (f_run == 0) {
-                    for (unsigned l = 0; l < _max_num_look_edges; l++) {
-                        if (hyp_LookEdge[l]) {
-                            int count = 0;
-                            std::cout<<"le_idx = "<<l<<std::endl;
-                            //std::cout<<"le_idx = "<<le_idx<<std::endl;
-                            //std::cout<<"valid_bundle_created = "<<valid_bundle_created<<std::endl;
-                            for (unsigned i = 0; i < curves_num_in_bundle_pixel*curves_num_in_bundle_theta; i++) {
-                                std::cout<<bundle_min_ks(l, i)<<","<<bundle_max_ks(l, i)<<"\t";
-                                count++;
-                                if (count == 7){
-                                    std::cout<<std::endl;
-                                    count = 0;
-                                }
-                            }
-                            std::cout<<std::endl;
+                    std::cout<<"look edge indx: ";
+                    for ( unsigned i = 0; i < _max_num_look_edges; i++ ) {
+                        if (hyp_LookEdge[i]) {
+                            retrieve_edge_data_from_edgeLookList(te_idx, i+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
+                            std::cout<<i<<"  ";
                         }
                     }
-                }*/
-                std::cout<<"==============================================="<<std::endl;
-            }
-            #endif
+                    std::cout<<std::endl;
 
-            //> now, for each pair-wise curvelet bundle hypothesis formed w.r.t. the target edge,
-            //  fix one and examine curve bundle intersections with all the rest,
-            //  and loop over all the look edges to do the same procedure
-            for (unsigned le_idx = 0; le_idx < _max_num_look_edges; le_idx++) {
+                    /*if (f_run == 0) {
+                        for (unsigned l = 0; l < _max_num_look_edges; l++) {
+                            std::cout<<hyp_LookEdge[l]<<"  ";
+                        }
+                        std::cout<<std::endl;
+                    }*/
 
-                edge_chain_lidx = 0;
+                    //> Print curvature bundle
+                    /*if (f_run == 0) {
+                        for (unsigned l = 0; l < _max_num_look_edges; l++) {
+                            if (hyp_LookEdge[l]) {
+                                int count = 0;
+                                std::cout<<"le_idx = "<<l<<std::endl;
+                                //std::cout<<"le_idx = "<<le_idx<<std::endl;
+                                //std::cout<<"valid_bundle_created = "<<valid_bundle_created<<std::endl;
+                                for (unsigned i = 0; i < curves_num_in_bundle_pixel*curves_num_in_bundle_theta; i++) {
+                                    std::cout<<bundle_min_ks(l, i)<<","<<bundle_max_ks(l, i)<<"\t";
+                                    count++;
+                                    if (count == 7){
+                                        std::cout<<std::endl;
+                                        count = 0;
+                                    }
+                                }
+                                std::cout<<std::endl;
+                            }
+                        }
+                    }*/
+                    std::cout<<"==============================================="<<std::endl;
+                }
+                #endif
 
-                if (hyp_LookEdge[le_idx]) {
+                //> now, for each pair-wise curvelet bundle hypothesis formed w.r.t. the target edge,
+                //  fix one and examine curve bundle intersections with all the rest,
+                //  and loop over all the look edges to do the same procedure
+                for (unsigned le_idx = 0; le_idx < (unsigned)_max_num_look_edges; le_idx++) {
 
-                    edge_chain_on_the_fly[ edge_chain_lidx++ ] = (unsigned)te_id;
+                    edge_chain_lidx = 0;
 
-                    move_to_cmp_bundle( 0, le_idx, false );
+                    if (hyp_LookEdge[le_idx]) {
 
-                    for (unsigned le_remain_idx = 0; le_remain_idx < _max_num_look_edges; le_remain_idx++) {
+                        edge_chain_on_the_fly[ edge_chain_lidx++ ] = (unsigned)te_id;
 
-                        if (hyp_LookEdge[le_remain_idx]) {
+                        move_to_cmp_bundle( 0, le_idx, false, bundle_min_ks, bundle_max_ks, cmp_bundle_min_ks, cmp_bundle_max_ks,
+                                            intersect_bundle_min_ks, intersect_bundle_max_ks );
 
-                            retrieve_edge_data_from_edgeLookList(te_idx, le_remain_idx+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
+                        for (unsigned le_remain_idx = 0; le_remain_idx < (unsigned)_max_num_look_edges; le_remain_idx++) {
 
-                            if (le_idx == le_remain_idx) {
+                            if (hyp_LookEdge[le_remain_idx]) {
 
-                                if (ref_first) {
-                                    edge_chain_on_the_fly[ edge_chain_lidx++ ] = (unsigned)le_id;
-                                } else {
-                                    chain_push_front(edge_chain_on_the_fly, edge_chain_lidx, (unsigned)le_id);
+                                retrieve_edge_data_from_edgeLookList(te_idx, le_remain_idx+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
+
+                                if (le_idx == le_remain_idx) {
+
+                                    if (ref_first) {
+                                        edge_chain_on_the_fly[ edge_chain_lidx++ ] = (unsigned)le_id;
+                                    } 
+                                    else {
+                                        chain_push_front(edge_chain_on_the_fly, edge_chain_lidx, (unsigned)le_id);
+                                    }
+
+                                    if (edge_chain_lidx >= _group_max_sz) {
+                                        break;
+                                    }
+                                    else {
+                                        continue;
+                                    }
+                                }
+
+                                move_to_cmp_bundle( 1, le_remain_idx, false, bundle_min_ks, bundle_max_ks, cmp_bundle_min_ks, cmp_bundle_max_ks,
+                                                    intersect_bundle_min_ks, intersect_bundle_max_ks );
+
+                                bundle_intersection(cmp_bundle_min_ks, cmp_bundle_max_ks, intersect_bundle_min_ks, intersect_bundle_max_ks);
+
+                                valid_bundle_intersection = bundle_intersection_valid_check(intersect_bundle_min_ks, intersect_bundle_max_ks);
+
+                                if (valid_bundle_intersection) {
+
+                                    if (ref_first) {
+                                        edge_chain_on_the_fly[ edge_chain_lidx++ ] = (unsigned)le_id;
+                                    } else {
+                                        chain_push_front(edge_chain_on_the_fly, edge_chain_lidx, (unsigned)le_id);
+                                    }
+
+                                    move_to_cmp_bundle( 0, le_remain_idx, true, bundle_min_ks, bundle_max_ks, cmp_bundle_min_ks, cmp_bundle_max_ks,
+                                                        intersect_bundle_min_ks, intersect_bundle_max_ks );
                                 }
 
                                 if (edge_chain_lidx >= _group_max_sz) {
                                     break;
                                 }
-                                else {
-                                    continue;
-                                }
-                            }
-
-                            move_to_cmp_bundle( 1, le_remain_idx, false );
-
-                            bundle_intersection();
-
-                            valid_bundle_intersection = bundle_intersection_valid_check();
-
-                            if (valid_bundle_intersection) {
-
-                                if (ref_first) {
-                                    edge_chain_on_the_fly[ edge_chain_lidx++ ] = (unsigned)le_id;
-                                } else {
-                                    chain_push_front(edge_chain_on_the_fly, edge_chain_lidx, (unsigned)le_id);
-                                }
-
-                                move_to_cmp_bundle( 0, le_remain_idx, true );
-                            }
-
-                            if (edge_chain_lidx >= _group_max_sz) {
-                                break;
                             }
                         }
                     }
-                }
-                else {
-                    continue;
-                }
-
-                if (edge_chain_lidx > 2 && !check_curvelet_exist(edge_chain_lidx, edge_chain_on_the_fly, edge_chain_target)) {
-                    
-                    for (unsigned chain_idx = 0; chain_idx < edge_chain_lidx; chain_idx++) {
-                        edge_chain_target(edge_chain_target_idx, chain_idx) = edge_chain_on_the_fly[chain_idx];
+                    else {
+                        continue;
                     }
 
-                    edge_chain_target(edge_chain_target_idx, _group_max_sz) = edge_chain_lidx;
-                    edge_chain_target_idx++;
+                    if (edge_chain_lidx > 2 && !check_curvelet_exist(edge_chain_lidx, edge_chain_on_the_fly, edge_chain_target)) {
+                        
+                        for (unsigned chain_idx = 0; chain_idx < edge_chain_lidx; chain_idx++) {
+                            edge_chain_target(edge_chain_target_idx, chain_idx) = edge_chain_on_the_fly[chain_idx];
+                        }
 
-                    record_curvelet_chain((unsigned)te_id, edge_chain_on_the_fly, edge_chain_lidx);
+                        edge_chain_target(edge_chain_target_idx, _group_max_sz) = edge_chain_lidx;
+                        edge_chain_target_idx++;
+
+                        record_curvelet_chain((unsigned)te_id, edge_chain_on_the_fly, edge_chain_lidx);
+                    }
+
+                    for (unsigned i = 0; i < _group_max_sz; i++) {
+                        edge_chain_on_the_fly[i] = 0;
+                    }
+                    
                 }
 
-                //> refresh the edge_chain_on_the_fly
-                for (unsigned i = 0; i < _group_max_sz; i++) {
-                    edge_chain_on_the_fly[i] = 0;
+                for (unsigned i = 0; i < (unsigned)_max_num_look_edges; i++) {
+                    for (unsigned j = 0; j < (curves_num_in_bundle_pixel * curves_num_in_bundle_theta) ; j++) {
+                        bundle_min_ks(i, j) = -_max_k;
+                        bundle_max_ks(i, j) = _max_k;
+                    }
+                    hyp_LookEdge[i] = false;
                 }
-                
-            } //> for loop over all l_id
+                for (unsigned i = 0; i < _max_num_look_edges; i++) {
+                    for (unsigned j = 0; j < (_group_max_sz+1); j++) {
+                        edge_chain_target(i, j) = 0;
+                    }
+                }
 
-            //> refresh data for the use of new target edges
-            for (unsigned i = 0; i < _max_num_look_edges; i++) {
-                for (unsigned j = 0; j < (curves_num_in_bundle_pixel * curves_num_in_bundle_theta) ; j++) {
-                    bundle_min_ks(i, j) = -_max_k;
-                    bundle_max_ks(i, j) = _max_k;
+            }   //> for loop over 2 forward runs
+
+            //> DEBUG!!!!!!!!!!!!!
+            //  PRINT OUT THE FINAL EDGE CHAIN AFTER TWO RUNS ARE FINISHED
+            /*#if 0
+            if (te_id == DEBUG_TE_ID) {
+                for (unsigned i = 0; i < last_edge_chain_target_idx; i++) {
+                    for (unsigned j = 0; j < (_group_max_sz+1); j++) {
+                        std::cout<< edge_chain_final(i, j) << "  ";
+                    }
+                    std::cout<<std::endl;
                 }
-                hyp_LookEdge[i] = false;
             }
-            for (unsigned i = 0; i < _max_num_look_edges; i++) {
-                for (unsigned j = 0; j < (_group_max_sz+1); j++) {
-                    edge_chain_target(i, j) = 0;
-                }
-            }
+            #endif*/
+        
+        } //> for loop over all t_id
 
-        }   //> for loop over 2 forward runs
+        delete[] bundle_min_ks;
+        delete[] bundle_max_ks;
+        delete[] cmp_bundle_min_ks;
+        delete[] cmp_bundle_max_ks;
+        delete[] intersect_bundle_min_ks;
+        delete[] intersect_bundle_max_ks;
+        delete[] hyp_LookEdge;
 
-        //> DEBUG!!!!!!!!!!!!!
-        //  PRINT OUT THE FINAL EDGE CHAIN AFTER TWO RUNS ARE FINISHED
-        #if 0
-        if (te_id == DEBUG_TE_ID) {
-            for (unsigned i = 0; i < last_edge_chain_target_idx; i++) {
-                for (unsigned j = 0; j < (_group_max_sz+1); j++) {
-                    std::cout<< edge_chain_final(i, j) << "  ";
-                }
-                std::cout<<std::endl;
-            }
-        }
-        #endif
-    } //> for loop over all t_id
+        delete[] edge_chain_on_the_fly;
+        delete[] edge_chain_target;
+        //delete[] edge_chain_final;
+    }
 
+    compact_curvelet_output();
+
+    double curvelet_build_time = omp_get_wtime() - start;
+    if (omp_threads > 1)
+        std::cout<<"- Time of curvelet building (OpenMP, "<<omp_threads<<" threads): "<<curvelet_build_time*1000<<" (ms)"<<std::endl;
+    else
+        std::cout<<"- Time of curvelet building: "<<curvelet_build_time*1000<<" (ms)"<<std::endl;
     std::cout<<"- Number of curvelets formed: "<<_num_curvelets<<std::endl;
 }
 
 //> compute the max and min curvature of the curve bundle from a pair of edges
 template<typename T>
-bool CurveletCPU<T>::compute_curve_bundle( unsigned te_idx, unsigned le_idx ) {
+bool CurveletCPU<T>::compute_curve_bundle( unsigned te_idx, unsigned le_idx, T* bundle_min_ks, T* bundle_max_ks, bool* hyp_LookEdge,
+                                           T te_pt_x, T te_pt_y, T le_pt_x, T le_pt_y, T te_orient, T le_orient ) 
+{
     
     //> global indices to fill values in bundle_min_ks and bundle_max_ks fill
     unsigned bk_idx = 0;
@@ -613,7 +705,7 @@ bool CurveletCPU<T>::compute_curve_bundle( unsigned te_idx, unsigned le_idx ) {
     }
 
     //> check whether the built bundle is valid or not
-    bool valid = bundle_valid_check( le_idx );
+    bool valid = bundle_valid_check( le_idx, bundle_min_ks, bundle_max_ks );
 
     //> this boolean list indicates which look edge is valid to be proceeded
     hyp_LookEdge[ le_idx ] = (valid) ? true : false;
@@ -622,7 +714,7 @@ bool CurveletCPU<T>::compute_curve_bundle( unsigned te_idx, unsigned le_idx ) {
 }
 
 template<typename T>
-bool CurveletCPU<T>::bundle_valid_check( unsigned le_idx )
+bool CurveletCPU<T>::bundle_valid_check( unsigned le_idx, T* bundle_min_ks, T* bundle_max_ks )
 {    
     //> check the curve bundle is valid or not
     for (int k_idx = 0; k_idx < (curves_num_in_bundle_pixel * curves_num_in_bundle_theta) ; k_idx++ ) {
@@ -633,7 +725,7 @@ bool CurveletCPU<T>::bundle_valid_check( unsigned le_idx )
 }
 
 template<typename T>
-void CurveletCPU<T>::bundle_intersection()
+void CurveletCPU<T>::bundle_intersection(T* cmp_bundle_min_ks, T* cmp_bundle_max_ks, T* intersect_bundle_min_ks, T* intersect_bundle_max_ks)
 {
     //> compare the curvatures in the cmp_bundle_min_ks and cmp_bundle_max_ks
     for (unsigned j = 0; j < (curves_num_in_bundle_pixel * curves_num_in_bundle_theta) ; j++) {
@@ -646,7 +738,7 @@ void CurveletCPU<T>::bundle_intersection()
 }
 
 template<typename T>
-bool CurveletCPU<T>::bundle_intersection_valid_check()
+bool CurveletCPU<T>::bundle_intersection_valid_check( T* intersect_bundle_min_ks, T* intersect_bundle_max_ks )
 {
     //> check the intersected curve bundle is valid or not
     for (int k_idx = 0; k_idx < (curves_num_in_bundle_pixel * curves_num_in_bundle_theta) ; k_idx++ ) {
@@ -657,7 +749,9 @@ bool CurveletCPU<T>::bundle_intersection_valid_check()
 }
 
 template<typename T>
-void CurveletCPU<T>::move_to_cmp_bundle( unsigned cmp_idx, unsigned le_idx, bool rep_by_intersection )
+void CurveletCPU<T>::move_to_cmp_bundle( unsigned cmp_idx, unsigned le_idx, bool rep_by_intersection, 
+                                         T* bundle_min_ks, T* bundle_max_ks, T* cmp_bundle_min_ks, T* cmp_bundle_max_ks,
+                                         T* intersect_bundle_min_ks, T* intersect_bundle_max_ks )
 {
     //> keep the curvelet bundle
     if (!rep_by_intersection) {
@@ -677,26 +771,39 @@ void CurveletCPU<T>::move_to_cmp_bundle( unsigned cmp_idx, unsigned le_idx, bool
 template<typename T>
 bool CurveletCPU<T>::check_curvelet_exist( unsigned edge_chain_on_the_fly_sz, unsigned* edge_chain_on_the_fly, unsigned* edge_chain_target ) 
 {
+    //> does the curvelet exist before?
+    //  this is examined by comparing the edge_chain_on_the_fly 
+    //  with edge_chain_target to see whether overlapping edge 
+    //  chain exists
+
     unsigned edge_chain_sz;
     bool cvlet_exists = true;
-    for (unsigned i = 0; i < (unsigned)_max_num_look_edges; i++) {
+    for (unsigned i = 0; i < _max_num_look_edges; i++) {
+        //> retrieve the size
         edge_chain_sz = edge_chain_target(i, _group_max_sz);
 
+        //> reset
         cvlet_exists = true;
 
+        //> if reaching to the end of the edge_chain_target
         if (edge_chain_sz == 0) {
             return false;
         }
 
+        //> if the size of the edge chain is the same
         if (edge_chain_sz == edge_chain_on_the_fly_sz) {
 
             for (unsigned chain_idx = 0; chain_idx < edge_chain_on_the_fly_sz; chain_idx++) {
                 cvlet_exists = cvlet_exists && (edge_chain_on_the_fly[chain_idx] == edge_chain_target(i, chain_idx));
             }
 
+            //> cvlet_exists remains true only if all the edgel ids in edge chains match
             if (cvlet_exists) {
                 return true;
             }
+        }
+        else {
+            continue;
         }
     }
 
@@ -706,16 +813,7 @@ bool CurveletCPU<T>::check_curvelet_exist( unsigned edge_chain_on_the_fly_sz, un
 template<typename T>
 CurveletCPU<T>::~CurveletCPU() {
     delete[] _edgeLookList;
-    delete[] bundle_min_ks;
-    delete[] bundle_max_ks;
-    delete[] cmp_bundle_min_ks;
-    delete[] cmp_bundle_max_ks;
-    delete[] intersect_bundle_min_ks;
-    delete[] intersect_bundle_max_ks;
-    delete[] hyp_LookEdge;
-
-    delete[] edge_chain_on_the_fly;
-    delete[] edge_chain_target;
+    delete[] _anchor_chain_count;
     delete[] _edge_chain_final;
 }
 
