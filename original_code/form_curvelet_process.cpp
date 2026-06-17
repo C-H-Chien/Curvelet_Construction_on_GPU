@@ -167,13 +167,13 @@ void form_curvelet_process::build_curvelets_greedy(bool use_flag, bool verbose)
 void form_curvelet_process::build_curvelets_greedy_for_edge(edgel* eA, bool use_flag, bool forward, bool centered, bool leading)
 {
     // CH: 1st run:
-    // CH: use_flag = flase
+    // CH: use_flag = false
     // CH: forward = true
     // CH: centered = false
     // CH: leading = true
 
     // CH: 2nd run:
-    // CH: use_flag = flase
+    // CH: use_flag = false
     // CH: forward = true
     // CH: centered = false
     // CH: leading = false
@@ -190,9 +190,6 @@ void form_curvelet_process::build_curvelets_greedy_for_edge(edgel* eA, bool use_
     
     bool verbose = false;
     bool debug_print = false;
-
-    if (eA->_id == 1)
-        debug_print = true;
 
     // if (eA->_id==3) verbose = true;
     // 2) iterate over the neighboring cells around this edgel

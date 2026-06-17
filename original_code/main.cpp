@@ -75,7 +75,7 @@ void write_double_array_to_file(std::string filename, double *wr_data, int first
 #define wr_data(i, j) wr_data[(i) * second_dim + (j)]
 
     std::cout<<"writing data to a file "<<filename<<" ..."<<std::endl;
-    std::string out_file_name = "../test_files/";
+    std::string out_file_name = "../../outputs/";
     out_file_name.append(filename);
 	std::ofstream out_file;
     out_file.open(out_file_name);
@@ -84,7 +84,7 @@ void write_double_array_to_file(std::string filename, double *wr_data, int first
 
 	for (int i = 0; i < first_dim; i++) {
 		for (int j = 0; j < second_dim; j++) {
-			out_file << wr_data(i, j) <<"\t";
+			out_file << wr_data[i + first_dim * j] <<"\t";
 		}
 		out_file << "\n";
 	}
@@ -98,7 +98,7 @@ void write_int_array_to_file(std::string filename, int *wr_data, int first_dim, 
 #define wr_data(i, j) wr_data[(i) * second_dim + (j)]
 
     std::cout<<"writing data to a file "<<filename<<" ..."<<std::endl;
-    std::string out_file_name = "../test_files/";
+    std::string out_file_name = "../outputs/";
     out_file_name.append(filename);
 	std::ofstream out_file;
     out_file.open(out_file_name);
@@ -107,7 +107,6 @@ void write_int_array_to_file(std::string filename, int *wr_data, int first_dim, 
 
 	for (int i = 0; i < first_dim; i++) {
 		for (int j = 0; j < second_dim; j++) {
-			//out_file << wr_data(i, j) <<"\t";
             out_file << wr_data[i + first_dim * j] <<"\t";
 		}
 		out_file << "\n";
@@ -119,33 +118,37 @@ void write_int_array_to_file(std::string filename, int *wr_data, int first_dim, 
 
 int main(int argc, char **argv)
 {
-    const double PI = 3.14159265358979323846;
-
-    // -- settings
-    //int height = 481; 
-    //int width = 321; 
-    int height = 480; 
-    int width = 752; 
+    //> Settings (match original_code/plot_curvelets_from_TOED_file.m / form_curvelet_mex)
+    int height = 800; 
+    int width = 800; 
     double nrad = 3.5;
     double gap = 1.5;
     double dx = 0.4;
-    double dt = (15.0/180.0)*PI; 
+    double dt = (15.0/180.0)*M_PI; 
     double token_len = 1;
     double max_k = 0.3;
-    unsigned curvelet_style = 3;
-    unsigned group_max_sz = 7;
+    unsigned curvelet_style = 2;   // anchor-leading bidirectional
+    unsigned group_max_sz = 4;
     unsigned out_type = 0;
 
-    int edge_num = 72043;
+    int edge_num = 3965;
     //int edge_num = 100;
     int edge_data_sz = 4;
     double *TOED_edges;
     TOED_edges = new double[edge_num * edge_data_sz];
 
-    // read third-order edges from file
-    //read_TO_edges_from_file("TO_edges.txt", TOED_edges, edge_num, edge_data_sz);
-    read_TO_edges_from_file("TO_edges_digit1_T.txt", TOED_edges, edge_num, edge_data_sz);
-    //read_TO_edges_from_file("TO_edges_EuRoC.txt", TOED_edges, edge_num, edge_data_sz);
+    //> read third-order edges from file (row-major buffer)
+    read_TO_edges_from_file("TO_edges_ABC_0006_thresh1.txt", TOED_edges, edge_num, edge_data_sz);
+
+    // form_curvelet_mex receives column-major edgeinfo from MATLAB; match that layout
+    double *TOED_edges_cm = new double[edge_num * edge_data_sz];
+    for (int i = 0; i < edge_num; i++) {
+        for (int j = 0; j < edge_data_sz; j++) {
+            TOED_edges_cm[j * edge_num + i] = TOED_edges[i * edge_data_sz + j];
+        }
+    }
+    delete[] TOED_edges;
+    TOED_edges = TOED_edges_cm;
 
     // construct and assign the subpixel edge list
     arrayd edgeinfo; 
@@ -157,7 +160,6 @@ int main(int argc, char **argv)
     edgeinfo.set_w(w);
 
     //std::cout<<edgeinfo._data[100]<<"\t"<<edgeinfo._data[101]<<std::endl;
-    //std::cout<<edgeinfo._data[28793]<<"\t"<<edgeinfo._data[28794]<<std::endl;
 
     unsigned output_type = out_type;
     
@@ -217,9 +219,8 @@ int main(int argc, char **argv)
         std::cout<<std::endl;
     }
 */
-    //write_int_array_to_file("chain.txt", out_chain, out_h, out_w);
-    //write_int_array_to_file("chain.txt", chain._data, out_h, out_w);
-    //write_double_array_to_file("info.txt", info._data, info_w, out_h);
+    write_int_array_to_file("chain_original.txt", chain._data, out_h, out_w);
+    // write_double_array_to_file("info.txt", info._data, info_w, out_h);
 
     delete[] TOED_edges;
     delete[] out_info;
