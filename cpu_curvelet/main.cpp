@@ -20,6 +20,7 @@
 
 #include "preprocess.hpp"
 #include "cpu_curvelet.hpp"
+#include "timer.hpp"
 
 template<typename T>
 void read_TO_edges_from_file(std::string filename, T *rd_data, int first_dim, int second_dim)
@@ -124,8 +125,8 @@ void run_curvelet(const std::string &out_chain_file, int nthreads)
     const T PI = T(3.14159265358979323846);
 
     // -- input settings (match original_code / cpu_curvelet for comparison)
-    int height = 800;
-    int width = 800;
+    int height = 464;
+    int width = 742;
     T nrad = T(3.5);
     T gap = T(1.5);
     T dx = T(0.4);
@@ -140,16 +141,20 @@ void run_curvelet(const std::string &out_chain_file, int nthreads)
     T st = T(0.08);
     const unsigned LOOK_EDGE_SLOTS = 64;
 
-    int edge_num = 3965;
+    int edge_num = 14781;
     int edge_data_sz = 4;
 
     std::cout << "Using scalar type: " << scalar_name<T>() << std::endl;
+
+    StepTimer timer;
+    timer.start();
 
     T *TOED_edges;
     TOED_edges = new T[edge_num * edge_data_sz];
 
     // read third-order edges from file
-    read_TO_edges_from_file("TO_edges_ABC_0006_thresh1.txt", TOED_edges, edge_num, edge_data_sz);
+    read_TO_edges_from_file("eth3d_cables2.txt", TOED_edges, edge_num, edge_data_sz);
+    timer.lap("read TO edges");
 
     // ------------------------------------------------------------------
     //> preprocessings ...
@@ -160,8 +165,13 @@ void run_curvelet(const std::string &out_chain_file, int nthreads)
 
     //> 1) construct edge maps and edge lists
     edgeNeighborList<T> edgeLookListObj( width, height, edge_num, edge_data_sz, TOED_edges, group_max_sz, nrad, LOOK_EDGE_SLOTS );
+    timer.lap("construct edge map");
+
     edgeLookListObj.init_edgeLookList( edgeLookList );
+    timer.lap("init edgeLookList");
+
     edgeLookListObj.create_edgeLookList( edgeLookList, max_LookEdgeNum );
+    timer.lap("create edgeLookList");
 
     //std::cout<<"maxmial number of look edges (from main) = "<<max_LookEdgeNum<<std::endl;
 
@@ -169,7 +179,10 @@ void run_curvelet(const std::string &out_chain_file, int nthreads)
     CurveletCPU<T> CurveletCPU_obj( edge_num, edge_data_sz, edgeLookList, max_LookEdgeNum,
                                     edgeLookList_src_stride, dx, dt, sx, st, max_k, group_max_sz, nthreads,
                                     TOED_edges, nrad, token_len);
+    timer.lap("CurveletCPU setup (copy edgeLookList)");
+
     CurveletCPU_obj.build_curvelets_greedy();
+    timer.lap("build_curvelets_greedy");
 
     const unsigned out_h = CurveletCPU_obj.num_curvelets();
     const unsigned out_w = CurveletCPU_obj.chain_width();
@@ -192,6 +205,8 @@ void run_curvelet(const std::string &out_chain_file, int nthreads)
         }
     }
     write_double_array_to_file(chain_to_info_filename(out_chain_file), out_info, out_h, info_w);
+    timer.lap("write output");
+    timer.summary();
 
     // edgeMap _edgeMap(width, height, edge_num, edge_data_sz, TOED_edges);
     // _edgeMap.print_map();

@@ -134,8 +134,8 @@ void write_int_array_to_file(std::string filename, int *wr_data, int first_dim, 
 int main(int argc, char **argv)
 {
     //> Settings (match original_code/plot_curvelets_from_TOED_file.m / form_curvelet_mex)
-    int height = 800; 
-    int width = 800; 
+    int height = 464; 
+    int width = 742; 
     double nrad = 3.5;
     double gap = 1.5;
     double dx = 0.4;
@@ -146,14 +146,13 @@ int main(int argc, char **argv)
     unsigned group_max_sz = 4;
     unsigned out_type = 0;
 
-    int edge_num = 3965;
-    //int edge_num = 100;
+    int edge_num = 14781;
     int edge_data_sz = 4;
     double *TOED_edges;
     TOED_edges = new double[edge_num * edge_data_sz];
 
     //> read third-order edges from file (row-major buffer)
-    read_TO_edges_from_file("TO_edges_ABC_0006_thresh1.txt", TOED_edges, edge_num, edge_data_sz);
+    read_TO_edges_from_file("eth3d_cables2.txt", TOED_edges, edge_num, edge_data_sz);
 
     // form_curvelet_mex receives column-major edgeinfo from MATLAB; match that layout
     double *TOED_edges_cm = new double[edge_num * edge_data_sz];
