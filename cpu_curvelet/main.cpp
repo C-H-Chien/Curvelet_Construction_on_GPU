@@ -1,117 +1,15 @@
-
-/*****************************************************************************
-// file: main
-// author: Chiang-Heng Chien
-// date: 06/14/2022
-//       An algorithm to form curvelet from input third order edge list
-******************************************************************************/
-
 #include <iostream>
-#include <iomanip>
 #include <cmath>
 #include <math.h>
-#include <fstream>
 #include <string>
 #include <cstring>
 #include <cstdlib>
 #include <vector>
-#include <ctime>
-#include <filesystem>
 
+#include "data_io.hpp"
 #include "preprocess.hpp"
 #include "cpu_curvelet.hpp"
 #include "timer.hpp"
-
-template<typename T>
-void read_TO_edges_from_file(std::string filename, T *rd_data, int first_dim, int second_dim)
-{
-    std::cout<<"reading data from a file "<<filename<<std::endl;
-    std::string in_file_name = "../test_files/";
-    in_file_name.append(filename);
-    std::fstream in_file;
-    T data;
-    int j = 0, i = 0;
-
-    in_file.open(in_file_name, std::ios_base::in);
-    if (!in_file) {
-        std::cerr << "input read file not existed!\n";
-    }
-    else {
-        while (in_file >> data) {
-            rd_data[i * second_dim + j] = data;
-            j++;
-            if (j == second_dim) {
-                j = 0;
-                i++;
-            }
-        }
-    }
-}
-
-void write_int_array_to_file(std::string filename, int *wr_data, int first_dim, int second_dim)
-{
-    std::cout<<"writing data to a file "<<filename<<" ..."<<std::endl;
-    const std::filesystem::path out_dir = "../outputs";
-    std::error_code ec;
-    std::filesystem::create_directories(out_dir, ec);
-    if (ec) {
-        std::cerr << "Failed to create output directory " << out_dir << ": " << ec.message() << std::endl;
-        return;
-    }
-    std::string out_file_name = out_dir.string() + "/";
-    out_file_name.append(filename);
-	std::ofstream out_file;
-    out_file.open(out_file_name);
-    if ( !out_file.is_open() )
-      std::cout<<"write data file cannot be opened!"<<std::endl;
-
-	for (int i = 0; i < first_dim; i++) {
-		for (int j = 0; j < second_dim; j++) {
-            out_file << wr_data[i * second_dim + j] <<"\t";
-		}
-		out_file << "\n";
-	}
-
-    out_file.close();
-}
-
-void write_double_array_to_file(std::string filename, double *wr_data, int first_dim, int second_dim)
-{
-    std::cout<<"writing data to a file "<<filename<<" ..."<<std::endl;
-    const std::filesystem::path out_dir = "../outputs";
-    std::error_code ec;
-    std::filesystem::create_directories(out_dir, ec);
-    if (ec) {
-        std::cerr << "Failed to create output directory " << out_dir << ": " << ec.message() << std::endl;
-        return;
-    }
-    std::string out_file_name = out_dir.string() + "/";
-    out_file_name.append(filename);
-    std::ofstream out_file;
-    out_file.open(out_file_name);
-    if ( !out_file.is_open() )
-      std::cout<<"write data file cannot be opened!"<<std::endl;
-
-    for (int i = 0; i < first_dim; i++) {
-        for (int j = 0; j < second_dim; j++) {
-            out_file << wr_data[i * second_dim + j] <<"\t";
-        }
-        out_file << "\n";
-    }
-
-    out_file.close();
-}
-
-std::string chain_to_info_filename(const std::string &chain_file)
-{
-    const std::size_t pos = chain_file.find("chain");
-    if (pos != std::string::npos) {
-        std::string info_file = chain_file;
-        info_file.replace(pos, 5, "info");
-        return info_file;
-    }
-    return "info_" + chain_file;
-}
 
 template<typename T>
 const char* scalar_name()
@@ -120,13 +18,11 @@ const char* scalar_name()
 }
 
 template<typename T>
-void run_curvelet(const std::string &out_chain_file, int nthreads)
+bool run_curvelet(const std::string &out_chain_file, int nthreads)
 {
     const T PI = T(3.14159265358979323846);
 
     // -- input settings (match original_code / cpu_curvelet for comparison)
-    int height = 464;
-    int width = 742;
     T nrad = T(3.5);
     T gap = T(1.5);
     T dx = T(0.4);
@@ -141,19 +37,19 @@ void run_curvelet(const std::string &out_chain_file, int nthreads)
     T st = T(0.08);
     const unsigned LOOK_EDGE_SLOTS = 64;
 
-    int edge_num = 14781;
     int edge_data_sz = 4;
+    const std::string edge_file = "eth3d_cables2.txt";
 
     std::cout << "Using scalar type: " << scalar_name<T>() << std::endl;
 
     StepTimer timer;
     timer.start();
 
-    T *TOED_edges;
-    TOED_edges = new T[edge_num * edge_data_sz];
-
-    // read third-order edges from file
-    read_TO_edges_from_file("eth3d_cables2.txt", TOED_edges, edge_num, edge_data_sz);
+    std::vector<T> TOED_edges;
+    if (!read_TO_edges_from_file(edge_file, edge_data_sz, TOED_edges)) {
+        return false;
+    }
+    int edge_num = static_cast<int>(TOED_edges.size() / edge_data_sz);
     timer.lap("read TO edges");
 
     // ------------------------------------------------------------------
@@ -161,10 +57,8 @@ void run_curvelet(const std::string &out_chain_file, int nthreads)
     const int edgeLookList_src_stride = (edge_data_sz + 1) * (int)LOOK_EDGE_SLOTS;
     T *edgeLookList = new T[edgeLookList_src_stride * edge_num];
 
-    //edgeNeighborList( int &neighbor_sz, const T &rad):
-
     //> 1) construct edge maps and edge lists
-    edgeNeighborList<T> edgeLookListObj( width, height, edge_num, edge_data_sz, TOED_edges, group_max_sz, nrad, LOOK_EDGE_SLOTS );
+    edgeNeighborList<T> edgeLookListObj( edge_num, edge_data_sz, TOED_edges.data(), group_max_sz, nrad, LOOK_EDGE_SLOTS );
     timer.lap("construct edge map");
 
     edgeLookListObj.init_edgeLookList( edgeLookList );
@@ -173,12 +67,10 @@ void run_curvelet(const std::string &out_chain_file, int nthreads)
     edgeLookListObj.create_edgeLookList( edgeLookList, max_LookEdgeNum );
     timer.lap("create edgeLookList");
 
-    //std::cout<<"maxmial number of look edges (from main) = "<<max_LookEdgeNum<<std::endl;
-
     //> 2) build curvelet
     CurveletCPU<T> CurveletCPU_obj( edge_num, edge_data_sz, edgeLookList, max_LookEdgeNum,
                                     edgeLookList_src_stride, dx, dt, sx, st, max_k, group_max_sz, nthreads,
-                                    TOED_edges, nrad, token_len);
+                                    TOED_edges.data(), nrad, token_len);
     timer.lap("CurveletCPU setup (copy edgeLookList)");
 
     CurveletCPU_obj.build_curvelets_greedy();
@@ -208,10 +100,6 @@ void run_curvelet(const std::string &out_chain_file, int nthreads)
     timer.lap("write output");
     timer.summary();
 
-    // edgeMap _edgeMap(width, height, edge_num, edge_data_sz, TOED_edges);
-    // _edgeMap.print_map();
-
-    delete[] TOED_edges;
     delete[] edgeLookList;
     delete[] out_chain;
     delete[] out_info;
@@ -220,6 +108,7 @@ void run_curvelet(const std::string &out_chain_file, int nthreads)
     (void)token_len;
     (void)curvelet_style;
     (void)out_type;
+    return true;
 }
 
 int main(int argc, char **argv)
@@ -249,10 +138,8 @@ int main(int argc, char **argv)
         }
     }
 
-    if (use_double)
-        run_curvelet<double>(out_file, nthreads);
-    else
-        run_curvelet<float>(out_file, nthreads);
+    //> Run the curvelet construction main code
+    const bool ok = use_double ? run_curvelet<double>(out_file, nthreads) : run_curvelet<float>(out_file, nthreads);
 
-    return 0;
+    return ok ? 0 : 1;
 }

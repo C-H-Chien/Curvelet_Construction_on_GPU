@@ -122,8 +122,6 @@ class edgeNeighborList
 protected:
     edgeMap<T> _edgeMap;
     unsigned nr;        //< neighbor region
-    unsigned img_h;
-    unsigned img_w;
     T _rad;
     int _sz_edge_data;
     int _num_edges;
@@ -131,10 +129,9 @@ protected:
 
 public:
     //> constructor
-    edgeNeighborList(int &img_width, int &img_height, int &num_edges, int &sz_edge_data,
+    edgeNeighborList(int &num_edges, int &sz_edge_data,
                      T *to_edges, int group_mask_sz, const T &rad, unsigned look_slots = 64):
         _edgeMap(num_edges, sz_edge_data, to_edges),
-        img_h((unsigned)img_height), img_w((unsigned)img_width),
         _rad(rad), _num_edges(num_edges), _sz_edge_data(sz_edge_data), _look_slots(look_slots)
     {
         // 7x7 spatial bucket (reg=3), matches original form_curvelet_process.cpp
@@ -186,10 +183,6 @@ public:
             //> loop over the 7x7 neighbor
             for (unsigned p = x - nr; p <= (x + nr); p++) {
                 for (unsigned q = y - nr; q <= (y + nr); q++) {
-
-                    //> ignore if out of image boundary
-                    if (p < 0 || p >= img_w || q < 0 || q >= img_h )
-                        continue;
 
                     const std::pair<int, int> cell_key((int)p, (int)q);
                     typename std::map<std::pair<int, int>, std::vector<edgel<T>*> >::iterator cell_it =
