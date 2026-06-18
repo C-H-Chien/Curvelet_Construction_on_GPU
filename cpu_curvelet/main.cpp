@@ -2,11 +2,10 @@
 #include <cmath>
 #include <math.h>
 #include <string>
-#include <cstring>
-#include <cstdlib>
 #include <vector>
 
 #include "data_io.hpp"
+#include "param_settings.hpp"
 #include "preprocess.hpp"
 #include "cpu_curvelet.hpp"
 #include "timer.hpp"
@@ -18,27 +17,22 @@ const char* scalar_name()
 }
 
 template<typename T>
-bool run_curvelet(const std::string &out_chain_file, int nthreads)
+bool run_curvelet(const std::string &out_chain_file, int nthreads, const CurveletParams &params)
 {
-    const T PI = T(3.14159265358979323846);
+    const T nrad = T(params.nrad);
+    const T dx = T(params.dx);
+    const T dt = T(params.dt_deg / 180.0) * T(M_PI);
+    const T max_k = T(params.max_k);
+    const unsigned curvelet_style = params.curvelet_style;
+    const unsigned group_max_sz = params.group_max_sz;
+    const unsigned out_type = params.out_type;
+    unsigned max_LookEdgeNum = params.max_look_edge_num;
+    const T sx = T(params.sx);
+    const T st = T(params.st);
+    const unsigned LOOK_EDGE_SLOTS = params.look_edge_slots;
 
-    // -- input settings (match original_code / cpu_curvelet for comparison)
-    T nrad = T(3.5);
-    T gap = T(1.5);
-    T dx = T(0.4);
-    T dt = T(15.0/180.0)*PI;
-    T token_len = T(1);
-    T max_k = T(0.3);
-    unsigned curvelet_style = 2;
-    unsigned group_max_sz = 4;
-    unsigned out_type = 0;
-    unsigned max_LookEdgeNum = 0;
-    T sx = T(0.1);
-    T st = T(0.08);
-    const unsigned LOOK_EDGE_SLOTS = 64;
-
-    int edge_data_sz = 4;
-    const std::string edge_file = "eth3d_cables2.txt";
+    const std::string &edge_file = params.edge_file;
+    int edge_data_sz = params.edge_data_sz;
 
     std::cout << "Using scalar type: " << scalar_name<T>() << std::endl;
 
@@ -70,7 +64,7 @@ bool run_curvelet(const std::string &out_chain_file, int nthreads)
     //> 2) build curvelet
     CurveletCPU<T> CurveletCPU_obj( edge_num, edge_data_sz, edgeLookList, max_LookEdgeNum,
                                     edgeLookList_src_stride, dx, dt, sx, st, max_k, group_max_sz, nthreads,
-                                    TOED_edges.data(), nrad, token_len);
+                                    TOED_edges.data(), nrad, T(1));
     timer.lap("CurveletCPU setup (copy edgeLookList)");
 
     CurveletCPU_obj.build_curvelets_greedy();
@@ -104,8 +98,6 @@ bool run_curvelet(const std::string &out_chain_file, int nthreads)
     delete[] out_chain;
     delete[] out_info;
 
-    (void)gap;
-    (void)token_len;
     (void)curvelet_style;
     (void)out_type;
     return true;
@@ -116,30 +108,16 @@ int main(int argc, char **argv)
     int nthreads = 1;
     bool use_double = true;
     std::string out_file = "chain_cpu.txt";
+    CurveletParams params;
+    bool show_help = false;
 
-    for (int i = 1; i < argc; i++) {
-        if (std::strcmp(argv[i], "--float") == 0) {
-            use_double = false;
-            out_file = "chain_cpu_float.txt";
-        } 
-        else if (std::strcmp(argv[i], "--double") == 0) {
-            use_double = true;
-            out_file = "chain_cpu_double.txt";
-        } 
-        else if (std::strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
-            out_file = argv[++i];
-        } 
-        else if (std::strcmp(argv[i], "--nthreads") == 0 && i + 1 < argc) {
-            nthreads = std::atoi(argv[++i]);
-        }
-        else {
-            std::cerr << "Unknown argument: " << argv[i] << std::endl;
-            return 1;
-        }
+    if (!parse_args(argc, argv, params, use_double, out_file, nthreads, show_help)) {
+        return show_help ? 0 : 1;
     }
 
-    //> Run the curvelet construction main code
-    const bool ok = use_double ? run_curvelet<double>(out_file, nthreads) : run_curvelet<float>(out_file, nthreads);
+    const bool ok = use_double
+        ? run_curvelet<double>(out_file, nthreads, params)
+        : run_curvelet<float>(out_file, nthreads, params);
 
     return ok ? 0 : 1;
 }

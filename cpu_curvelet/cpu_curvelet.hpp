@@ -50,7 +50,6 @@ protected:
     //> used for building bundles
     T _max_k;
     T _nrad;
-    T _token_len;
     T *_to_edges;
 
     static const unsigned CURVELET_INFO_WIDTH = 10;
@@ -85,7 +84,7 @@ public:
                 T dx, T dt, T sx, T st, T max_k, unsigned group_max_sz, int nthreads,
                 T *to_edges, T nrad, T token_len):
                 _num_edges(num_edges), _sz_edge_data(sz_edge_data), _max_num_look_edges(max_LookEdgeNum),
-                _dx(dx), _dt(dt), _sx(sx), _st(st), _max_k(max_k), _nrad(nrad), _token_len(token_len),
+                _dx(dx), _dt(dt), _sx(sx), _st(st), _max_k(max_k), _nrad(nrad), 
                 _to_edges(to_edges), _group_max_sz(group_max_sz), omp_threads(nthreads),
                 _num_curvelets(0),
                 _max_per_anchor((unsigned)(max_LookEdgeNum + 1) * 2),
@@ -242,9 +241,7 @@ void CurveletCPU<T>::fill_curvelet_info( unsigned row, bool forward, T ref_pt_x,
 
     const T alpha3 = T(1);
     const T alpha4 = T(1);
-    const T quality = (length > T(0) && chain_sz > 0)
-        ? T(2) / (alpha3 * _nrad / length + alpha4 * length / _token_len / T(chain_sz))
-        : T(0);
+    const T quality = (length > T(0) && chain_sz > 0) ? T(2) / (alpha3 * _nrad / length + alpha4 * length / T(chain_sz)) : T(0);
 
     _curvelet_info[0 * _max_curvelets + row] = forward ? 1.0 : 0.0;
     _curvelet_info[1 * _max_curvelets + row] = (double)k_max;
