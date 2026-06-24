@@ -50,16 +50,8 @@ public:
     //: constructor
     edgeMap(int num_edges, int sz_edge_data, T *to_edges)
     {
-        // -- TODO?: assert if the TO_edges size is incorrect
-        //if ( sz_edges < 4 ){
-        //    std::cout << "Edge information size error" <<std::endl;
-        //}
         for (unsigned i = 0; i < (unsigned)num_edges; i++)
         {
-            //insert(to_edges.val(i,0), to_edges.val(i,1), to_edges.val(i,2), to_edges.val(i,3), i);
-
-            //T& val(const unsigned &r, const unsigned &c) const { return _data[c*_h+r]; }
-
             const unsigned base = i * (unsigned)sz_edge_data;
             const T x = to_edges[base + 0];
             const T y = to_edges[base + 1];
@@ -185,8 +177,7 @@ public:
                 for (unsigned q = y - nr; q <= (y + nr); q++) {
 
                     const std::pair<int, int> cell_key((int)p, (int)q);
-                    typename std::map<std::pair<int, int>, std::vector<edgel<T>*> >::iterator cell_it =
-                        _edgeMap._map.find(cell_key);
+                    typename std::map<std::pair<int, int>, std::vector<edgel<T>*> >::iterator cell_it = _edgeMap._map.find(cell_key);
                     if (cell_it == _edgeMap._map.end())
                         continue;
 
@@ -203,8 +194,6 @@ public:
                         dist_betwee_te_and_le = sq_dist<T>(edgeTarget->_pt_x, edgeTarget->_pt_y,
                                                            edgeNeighbor->_pt_x, edgeNeighbor->_pt_y);
 
-                        //ordered_le_idx_by_dist[LookEdgeIdx-1] = dist_betwee_te_and_le;
-
                         //> do a better check of circular radius because the bucketing neighborhood is very coarse
                         if ( dist_betwee_te_and_le > rad_sqr) 
                             continue;
@@ -213,8 +202,6 @@ public:
                         LookEdgeData<T> le_data_group = { dist_betwee_te_and_le, edgeNeighbor };
                         le_data.push_back(le_data_group);
 
-                        //> fill the candidate neighbor edges to the edge LookList
-                        //fill_edge_to_edgeLookList(edgeLookList, stride, i, LookEdgeIdx, edgeNeighbor, false);
                         LookEdgeIdx++;
                     }
                 }

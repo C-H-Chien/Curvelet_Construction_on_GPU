@@ -7,6 +7,7 @@
 #include <string>
 
 struct CurveletParams {
+    //> The following parameters are the default values for the curvelet construction
     double nrad = 3.5;
     double gap = 1.5;
     double dx = 0.4;
