@@ -88,6 +88,7 @@ public:
     float *_edgeLookList;
     // > constructor
     CurveletGPU(int device, int &num_edges, int &sz_edge_data, float *edgeLookList, unsigned max_num_look_edges,
+                int edge_look_src_stride,
                 float dx, float dt, float sx, float st, float max_k, unsigned group_max_sz):
                 device_id(device), _num_edges(num_edges), _sz_edge_data(sz_edge_data), 
                 _dx(dx), _dt(dt), _sx(sx), _st(st), _max_k(max_k), _group_max_sz(group_max_sz), _max_num_look_edges(max_num_look_edges)
@@ -95,10 +96,10 @@ public:
         //_edgeLookList = edgeLookList;
         _edgeLookList = new float[(_sz_edge_data+1) * (_max_num_look_edges+1) * _num_edges ];
 
-        //> assign edgeLookList to edgeLookList_fit
-        for (unsigned i = 0; i < _num_edges; i++) {
-            for (unsigned j = 0; j < (_max_num_look_edges+1)*5; j++) {
-                _edgeLookList(i, j) = edgeLookList(i, j);
+        //> assign edgeLookList to compact _edgeLookList
+        for (unsigned i = 0; i < (unsigned)_num_edges; i++) {
+            for (unsigned j = 0; j < (unsigned)(_max_num_look_edges+1)*5; j++) {
+                _edgeLookList(i, j) = edgeLookList[i * edge_look_src_stride + j];
             }
         }
 

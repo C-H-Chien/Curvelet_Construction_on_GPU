@@ -7,8 +7,6 @@
 
 // Third-Order Edge List for Pre-Processing
 #define TO_edges(i, j)                              TO_edges[(i) * sz_edge_data + (j)]
-#define edgeLookList(i, j)                      edgeLookList[(i) * ((_sz_edge_data+1)*32) + (j)]
-//#define unsorted_edgeLookList(i, j)    unsorted_edgeLookList[(i) * ((_sz_edge_data+1)*32) + (j)]
 
 // Build Curvelets
 //#define _edgeLookList(i, j)             _edgeLookList[(i) * ((_sz_edge_data+1)*32) + (j)]

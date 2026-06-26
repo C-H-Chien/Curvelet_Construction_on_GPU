@@ -50,16 +50,8 @@ public:
     //: constructor
     edgeMap(int num_edges, int sz_edge_data, T *to_edges)
     {
-        // -- TODO?: assert if the TO_edges size is incorrect
-        //if ( sz_edges < 4 ){
-        //    std::cout << "Edge information size error" <<std::endl;
-        //}
         for (unsigned i = 0; i < (unsigned)num_edges; i++)
         {
-            //insert(to_edges.val(i,0), to_edges.val(i,1), to_edges.val(i,2), to_edges.val(i,3), i);
-
-            //T& val(const unsigned &r, const unsigned &c) const { return _data[c*_h+r]; }
-
             const unsigned base = i * (unsigned)sz_edge_data;
             const T x = to_edges[base + 0];
             const T y = to_edges[base + 1];
@@ -122,8 +114,6 @@ class edgeNeighborList
 protected:
     edgeMap<T> _edgeMap;
     unsigned nr;        //< neighbor region
-    unsigned img_h;
-    unsigned img_w;
     T _rad;
     int _sz_edge_data;
     int _num_edges;
@@ -131,10 +121,9 @@ protected:
 
 public:
     //> constructor
-    edgeNeighborList(int &img_width, int &img_height, int &num_edges, int &sz_edge_data,
+    edgeNeighborList(int &num_edges, int &sz_edge_data,
                      T *to_edges, int group_mask_sz, const T &rad, unsigned look_slots = 64):
         _edgeMap(num_edges, sz_edge_data, to_edges),
-        img_h((unsigned)img_height), img_w((unsigned)img_width),
         _rad(rad), _num_edges(num_edges), _sz_edge_data(sz_edge_data), _look_slots(look_slots)
     {
         // 7x7 spatial bucket (reg=3), matches original form_curvelet_process.cpp
@@ -187,13 +176,8 @@ public:
             for (unsigned p = x - nr; p <= (x + nr); p++) {
                 for (unsigned q = y - nr; q <= (y + nr); q++) {
 
-                    //> ignore if out of image boundary
-                    if (p < 0 || p >= img_w || q < 0 || q >= img_h )
-                        continue;
-
                     const std::pair<int, int> cell_key((int)p, (int)q);
-                    typename std::map<std::pair<int, int>, std::vector<edgel<T>*> >::iterator cell_it =
-                        _edgeMap._map.find(cell_key);
+                    typename std::map<std::pair<int, int>, std::vector<edgel<T>*> >::iterator cell_it = _edgeMap._map.find(cell_key);
                     if (cell_it == _edgeMap._map.end())
                         continue;
 
@@ -210,8 +194,6 @@ public:
                         dist_betwee_te_and_le = sq_dist<T>(edgeTarget->_pt_x, edgeTarget->_pt_y,
                                                            edgeNeighbor->_pt_x, edgeNeighbor->_pt_y);
 
-                        //ordered_le_idx_by_dist[LookEdgeIdx-1] = dist_betwee_te_and_le;
-
                         //> do a better check of circular radius because the bucketing neighborhood is very coarse
                         if ( dist_betwee_te_and_le > rad_sqr) 
                             continue;
@@ -220,8 +202,6 @@ public:
                         LookEdgeData<T> le_data_group = { dist_betwee_te_and_le, edgeNeighbor };
                         le_data.push_back(le_data_group);
 
-                        //> fill the candidate neighbor edges to the edge LookList
-                        //fill_edge_to_edgeLookList(edgeLookList, stride, i, LookEdgeIdx, edgeNeighbor, false);
                         LookEdgeIdx++;
                     }
                 }
