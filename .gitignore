@@ -4,6 +4,4 @@ gpu_curvelet/*.o
 gpu_curvelet/CURVELET
 cpu_curvelet/*.o
 cpu_curvelet/CURVELET
-cpu_curvelet_omp/*.o
-cpu_curvelet_omp/CURVELET
 
