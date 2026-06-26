@@ -24,6 +24,9 @@ struct CurveletParams {
     int edge_data_sz = 4;
     // preprocess output: "csr", "edge-look-list", or "both"
     std::string preprocess_layout = "csr";
+    // csr build: "single-pass", "two-pass", or "compare-csr"
+    std::string csr_strategy = "single-pass";
+    unsigned max_candidates = 128;
 };
 
 inline void print_usage(const char *prog)
@@ -47,6 +50,8 @@ inline void print_usage(const char *prog)
         << "  --st <val>                 Angle sampling step in radians (default: 0.08)\n"
         << "  --look-edge-slots <N>      Look-edge table slots per edge (default: 64)\n"
         << "  --preprocess-layout <mode> Preprocess output: csr | edge-look-list | both (default: csr)\n"
+        << "  --csr-strategy <mode>      CSR build: single-pass | two-pass | compare-csr (default: single-pass)\n"
+        << "  --max-candidates <N>       Max neighbors staged per anchor (default: 128)\n"
         << "  --edge-data-sz <N>         Values per edge in input file (default: 4)\n"
         << "  --help                     Show this help message\n";
 }
@@ -143,6 +148,12 @@ inline bool parse_args(int argc, char **argv, CurveletParams &params,
         }
         else if (std::strcmp(arg, "--preprocess-layout") == 0 && i + 1 < argc) {
             params.preprocess_layout = argv[++i];
+        }
+        else if (std::strcmp(arg, "--csr-strategy") == 0 && i + 1 < argc) {
+            params.csr_strategy = argv[++i];
+        }
+        else if (std::strcmp(arg, "--max-candidates") == 0 && i + 1 < argc) {
+            if (!parse_unsigned_arg(argv[++i], "--max-candidates", params.max_candidates)) return false;
         }
         else if (std::strcmp(arg, "--edge-data-sz") == 0 && i + 1 < argc) {
             if (!parse_int_arg(argv[++i], "--edge-data-sz", params.edge_data_sz)) return false;

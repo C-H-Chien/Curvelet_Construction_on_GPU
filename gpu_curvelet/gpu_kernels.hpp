@@ -20,6 +20,18 @@
 //extern "C" {
 //#endif
 
+//> GPU neighbor-search preprocessing (see gpu_preprocess.hpp)
+struct GPUPreprocessConfig;
+struct GPUPreprocessResult;
+bool gpu_preprocess_build( 
+    const GPUPreprocessConfig &cfg,
+    const float *host_to_edges,
+    GPUPreprocessResult &result);
+
+void gpu_preprocess_free(GPUPreprocessResult &result);
+
+bool gpu_preprocess_compare_csr_to_edge_look_list( const GPUPreprocessResult &result, int num_edges_to_check);
+
 //> single precision curvelet building
 void gpu_build_curvelets_greedy(
         int device_id,
@@ -30,9 +42,5 @@ void gpu_build_curvelets_greedy(
         bool* dev_hyp_LookEdge,
         float* dev_retr_edgeLookList
 );
-
-//#ifdef __cplusplus
-//    }
-//#endif
 
 #endif // GPU_KERNELS_HPP

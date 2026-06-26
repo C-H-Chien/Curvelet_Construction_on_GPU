@@ -7,184 +7,145 @@
 ******************************************************************************/
 
 #include <iostream>
-#include <iomanip>
 #include <cmath>
-#include <math.h>
-#include <fstream>
-#include <string.h>
+#include <string>
 #include <vector>
-#include <ctime>
 
-#include "preprocess.hpp"
+#include "data_io.hpp"
+#include "param_settings.hpp"
+#include "gpu_preprocess.hpp"
 #include "gpu_curvelet.hpp"
+#include "timer.hpp"
 
-/*************************************************************
-Usage: 
- [chain, info] = form_curvelet_mex(edgeinfo, nrows, ncols,...
- rad, gap, dx, dt, token_len, max_k, cvlet_type, ...
- max_size_to_goup, output_type)
-Input:
-        edgeinfo: nx4 array storing the position, orientation
- and magnitude information;
-        nrows: height of the image;
-        ncols: width of the image;
-        rad: radius of the grouping neighborhood around each
- edgel;
-        gap: distance between two consecutive edges in a link;
-        dx: position uncertainty at the reference edgel;
-        dt: orientation uncertainty at the reference edgel;
-        token_len:
-        max_k: maximum curvature of curves in the curve bundle;
-        cvlet_type: if 0, form regular anchor centered curvelet;
- if 1, anchor centered bidirectional; if 2, anchor leading bidirectional;
- if 3, ENO style (anchor leading or trailing but in the same direction).
-        max_size_to_goup: the maximum numbers of edges to group;
-        output_type: if 0, out put curvelet map. if 1, out put
- the curve fragment map. if 2, out put the poly arc map.
- *************************************************************/
-
-void read_TO_edges_from_file(std::string filename, float *rd_data, int first_dim, int second_dim)
+static GPUPreprocessOutput parse_preprocess_layout(const std::string &mode)
 {
-#define rd_data(i, j) rd_data[(i) * second_dim + (j)]
-    std::cout<<"reading data from a file "<<filename<<std::endl;
-    std::string in_file_name = "../test_files/";
-    in_file_name.append(filename);
-    std::fstream in_file;
-    float data;
-    int j = 0, i = 0;
-
-    in_file.open(in_file_name, std::ios_base::in);
-    if (!in_file) {
-        std::cerr << "input read file not existed!\n";
+    if (mode == "edge-look-list" || mode == "edgelooklist" || mode == "legacy") {
+        return GPUPreprocessOutput::EdgeLookList;
     }
+    if (mode == "both" || mode == "compare") {
+        return GPUPreprocessOutput::Both;
+    }
+    return GPUPreprocessOutput::NeighborCSR;
+}
+
+static GPUNeighborCSRStrategy parse_csr_strategy(const std::string &mode)
+{
+    if (mode == "two-pass" || mode == "twopass" || mode == "legacy") {
+        return GPUNeighborCSRStrategy::TwoPass;
+    }
+    if (mode == "compare-csr" || mode == "compare") {
+        return GPUNeighborCSRStrategy::CompareCSR;
+    }
+    return GPUNeighborCSRStrategy::SinglePass;
+}
+
+bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, const CurveletParams &params)
+{
+    const float nrad = static_cast<float>(params.nrad);
+    const float dx = static_cast<float>(params.dx);
+    const float dt = static_cast<float>(params.dt_deg / 180.0) * static_cast<float>(M_PI);
+    const float max_k = static_cast<float>(params.max_k);
+    const unsigned curvelet_style = params.curvelet_style;
+    const unsigned group_max_sz = params.group_max_sz;
+    const unsigned out_type = params.out_type;
+    unsigned max_LookEdgeNum = params.max_look_edge_num;
+    const float sx = static_cast<float>(params.sx);
+    const float st = static_cast<float>(params.st);
+    const unsigned LOOK_EDGE_SLOTS = params.look_edge_slots;
+    const GPUPreprocessOutput layout = parse_preprocess_layout(params.preprocess_layout);
+
+    const std::string &edge_file = params.edge_file;
+    const int edge_data_sz = params.edge_data_sz;
+
+    std::cout << "Using scalar type: float (GPU)" << std::endl;
+
+    std::vector<float> TOED_edges;
+    if (!read_TO_edges_from_file(edge_file, edge_data_sz, TOED_edges)) {
+        return false;
+    }
+    int edge_num = static_cast<int>(TOED_edges.size() / edge_data_sz);
+
+    cudaDeviceProp prop;
+    cudacheck(cudaSetDevice(gpu_id));
+    cudaGetDeviceProperties(&prop, gpu_id);
+    printf("Device name: %s (Compute capability: %d.%d)\n", prop.name, prop.major, prop.minor);
+
+    StepTimer timer;
+    timer.start();
+
+    // ------------------------------------------------------------------
+    //> GPU preprocessing
+    GPUPreprocessConfig pre_cfg;
+    pre_cfg.device_id = gpu_id;
+    pre_cfg.num_edges = edge_num;
+    pre_cfg.sz_edge_data = edge_data_sz;
+    pre_cfg.look_slots = LOOK_EDGE_SLOTS;
+    pre_cfg.neighbor_radius = 3;
+    pre_cfg.rad = nrad;
+    pre_cfg.copy_to_host = true;
+    pre_cfg.output_layout = layout;
+    pre_cfg.csr_strategy = parse_csr_strategy(params.csr_strategy);
+    pre_cfg.max_candidates = params.max_candidates;
+
+    GPUPreprocessResult pre_result;
+    if (!gpu_preprocess_build(pre_cfg, TOED_edges.data(), pre_result)) {
+        return false;
+    }
+    timer.lap("GPU preprocessing");
+
+    const bool b_have_edge_look = (layout == GPUPreprocessOutput::EdgeLookList) || (layout == GPUPreprocessOutput::Both);
+    const bool b_have_csr = (layout == GPUPreprocessOutput::NeighborCSR) || (layout == GPUPreprocessOutput::Both);
+
+    if (b_have_csr) {
+        max_LookEdgeNum = pre_result.csr.max_neighbor_degree;
+        std::cout << "CSR layout ready: " << pre_result.csr.total_neighbor_pairs
+                  << " anchor-neighbor pairs" << std::endl;
+    }
+    if (b_have_edge_look) {
+        max_LookEdgeNum = pre_result.max_look_edge_num;
+    }
+
+    if (b_have_edge_look) {
+        float *edgeLookList = pre_result.host_edgeLookList;
+        const int edge_look_stride = pre_result.edge_look_stride;
+
+        int edge_num_arg = edge_num;
+        int edge_data_sz_arg = edge_data_sz;
+        CurveletGPU CurveletGPU_obj(gpu_id, edge_num_arg, edge_data_sz_arg, edgeLookList, max_LookEdgeNum,
+                                    edge_look_stride, dx, dt, sx, st, max_k, group_max_sz);
+        timer.lap("CurveletGPU setup (alloc + copy edgeLookList)");
+
+        CurveletGPU_obj.preprocessing();
+        timer.lap("GPU curvelet init (H2D memcpy)");
+
+        CurveletGPU_obj.build_curvelets_greedy();
+        timer.lap("build_curvelets_greedy (host wall time)");
+    } 
     else {
-        while (in_file >> data) {
-            rd_data(i, j) = data;
-            j++;
-            if (j == second_dim) {
-                j = 0;
-                i++;
-            }
-        }
+        std::cout << "Skipping legacy curvelet kernel (CSR-only preprocess mode)." << std::endl;
     }
-#undef rd_data
-}
 
-void write_double_array_to_file(std::string filename, float *wr_data, int first_dim, int second_dim)
-{
-#define wr_data(i, j) wr_data[(i) * second_dim + (j)]
+    timer.summary();
 
-    std::cout<<"writing data to a file "<<filename<<" ..."<<std::endl;
-    std::string out_file_name = "../test_files/";
-    out_file_name.append(filename);
-	std::ofstream out_file;
-    out_file.open(out_file_name);
-    if ( !out_file.is_open() )
-      std::cout<<"write data file cannot be opened!"<<std::endl;
+    gpu_preprocess_free(pre_result);
 
-	for (int i = 0; i < first_dim; i++) {
-		for (int j = 0; j < second_dim; j++) {
-			out_file << wr_data(i, j) <<"\t";
-		}
-		out_file << "\n";
-	}
-
-    out_file.close();
-#undef wr_data
-}
-
-void write_int_array_to_file(std::string filename, int *wr_data, int first_dim, int second_dim)
-{
-#define wr_data(i, j) wr_data[(i) * second_dim + (j)]
-
-    std::cout<<"writing data to a file "<<filename<<" ..."<<std::endl;
-    std::string out_file_name = "../test_files/";
-    out_file_name.append(filename);
-	std::ofstream out_file;
-    out_file.open(out_file_name);
-    if ( !out_file.is_open() )
-      std::cout<<"write data file cannot be opened!"<<std::endl;
-
-	for (int i = 0; i < first_dim; i++) {
-		for (int j = 0; j < second_dim; j++) {
-			//out_file << wr_data(i, j) <<"\t";
-            out_file << wr_data[i + first_dim * j] <<"\t";
-		}
-		out_file << "\n";
-	}
-
-    out_file.close();
-#undef wr_data
+    (void)out_chain_file;
+    (void)curvelet_style;
+    (void)out_type;
+    return true;
 }
 
 int main(int argc, char **argv)
 {
-    const float PI = 3.14159265358979323846;
-
-    // -- input settings
-    int height = 481; 
-    int width = 321; 
-    //int height = 28; 
-    //int width = 28; 
-    float nrad = 3.5;
-    float gap = 1.5;
-    float dx = 0.4;
-    float dt = (15.0/180.0)*PI; 
-    float token_len = 1;
-    float max_k = 0.3;
-    unsigned curvelet_style = 3;
-    unsigned group_max_sz = 7;
-    unsigned out_type = 0;
-    unsigned max_LookEdgeNum = 0;
-    float sx = 0.1;
-    float st = 0.08;
-
-    int edge_num = 31042;
-    //int edge_num = 100;
-    int edge_data_sz = 4;
-    float *TOED_edges;
-    TOED_edges = new float[edge_num * edge_data_sz];
-
-    // read third-order edges from file
-    read_TO_edges_from_file("TO_edges.txt", TOED_edges, edge_num, edge_data_sz);
-    //read_TO_edges_from_file("TO_edges_digit1.txt", TOED_edges, edge_num, edge_data_sz);
-
-    // ------------------------------------------------------------------
-    // > preprocessings ...
-    float *edgeLookList = new float[(edge_data_sz+1) * 32 * edge_num ];
-
-    //edgeNeighborList( int &neighbor_sz, const float &rad):
-
-    // > 1) construct edge maps and edge lists
-    //      This part is the same as CPU version
-    edgeNeighborList edgeLookListObj( width, height, edge_num, edge_data_sz, TOED_edges, group_max_sz, nrad );
-    edgeLookListObj.init_edgeLookList( edgeLookList );
-    edgeLookListObj.create_edgeLookList( edgeLookList, max_LookEdgeNum );
-
-    // > 2) build curvelet
-    //      This part contains GPU implementation
     int gpu_id = 0;
-	if(argc > 2) {
-	    gpu_id = atoi( argv[2] );
-	}
+    std::string out_file = "chain_gpu.txt";
+    CurveletParams params;
+    bool show_help = false;
 
-    //> TODO: change to dynamically printing the device information
-    cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, gpu_id);
-    printf("Device name: %s (Compute capability: %d.%d)\n", prop.name, prop.major, prop.minor);
-    //printf("  Clock Rate (KHz): %d\n",
+    if (!parse_args(argc, argv, params, out_file, gpu_id, show_help)) {
+        return show_help ? 0 : 1;
+    }
 
-    #if 0
-	cudacheck( cudaSetDevice(gpu_id) );
-    #endif
-
-    CurveletGPU CurveletGPU_obj( gpu_id, edge_num, edge_data_sz, edgeLookList, max_LookEdgeNum, 
-                                 dx, dt, sx, st, max_k, group_max_sz);
-    CurveletGPU_obj.preprocessing();
-    CurveletGPU_obj.build_curvelets_greedy();
-
-
-    delete[] TOED_edges;
-    delete[] edgeLookList;
+    const bool ok = run_curvelet_gpu(out_file, gpu_id, params);
+    return ok ? 0 : 1;
 }
-

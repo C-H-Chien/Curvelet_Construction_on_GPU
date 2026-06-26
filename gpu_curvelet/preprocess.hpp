@@ -126,7 +126,9 @@ public:
     edgeNeighborList(int &img_width, int &img_height, int &num_edges, int &sz_edge_data, float *TOED_edges, int group_mask_sz, const float &rad):
     _edgeMap(num_edges, sz_edge_data, TOED_edges), img_h(img_height), img_w(img_width), _rad(rad), _num_edges(num_edges), _sz_edge_data(sz_edge_data)
     {
-        nr = (group_mask_sz-1) / 2;
+        // 7x7 spatial bucket (reg=3), matches original form_curvelet_process.cpp
+        (void)group_mask_sz;
+        nr = 3;
         //_edgeMap.print_map();
 
         //unsorted_edgeLookList = new float[(_sz_edge_data+1) * 32 * _num_edges ];
