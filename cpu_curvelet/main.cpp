@@ -26,49 +26,36 @@ bool run_curvelet(const std::string &out_chain_file, int nthreads, const Curvele
     const unsigned curvelet_style = params.curvelet_style;
     const unsigned group_max_sz = params.group_max_sz;
     const unsigned out_type = params.out_type;
-    unsigned max_LookEdgeNum = params.max_look_edge_num;
     const T sx = T(params.sx);
     const T st = T(params.st);
-    const unsigned LOOK_EDGE_SLOTS = params.look_edge_slots;
 
     const std::string &edge_file = params.edge_file;
     int edge_data_sz = params.edge_data_sz;
 
     std::cout << "Using scalar type: " << scalar_name<T>() << std::endl;
 
-    StepTimer timer;
-    timer.start();
-
     std::vector<T> TOED_edges;
     if (!read_TO_edges_from_file(edge_file, edge_data_sz, TOED_edges)) {
         return false;
     }
     int edge_num = static_cast<int>(TOED_edges.size() / edge_data_sz);
-    timer.lap("read TO edges");
 
-    // ------------------------------------------------------------------
-    //> preprocessings ...
-    const int edgeLookList_src_stride = (edge_data_sz + 1) * (int)LOOK_EDGE_SLOTS;
-    T *edgeLookList = new T[edgeLookList_src_stride * edge_num];
+    StepTimer timer;
+    timer.start();
 
-    //> 1) construct edge maps and edge lists
-    edgeNeighborList<T> edgeLookListObj( edge_num, edge_data_sz, TOED_edges.data(), group_max_sz, nrad, LOOK_EDGE_SLOTS );
-    timer.lap("construct edge map");
+    //> Preprocess: identify neighbor edges for each anchor edge and structure the neighbor graph in compressed sparse rows (CSR) form
+    CPUNeighborGraph<T> csr_graph;
+    if (!build_neighbor_csr_graph( edge_num, edge_data_sz, TOED_edges.data(), nrad, 3u, params.max_candidates, nthreads, csr_graph)) {
+        return false;
+    }
+    timer.lap("build CSR neighbor graph");
 
-    edgeLookListObj.init_edgeLookList( edgeLookList );
-    timer.lap("init edgeLookList");
-
-    edgeLookListObj.create_edgeLookList( edgeLookList, max_LookEdgeNum );
-    timer.lap("create edgeLookList");
-
-    //> 2) build curvelet
-    CurveletCPU<T> CurveletCPU_obj( edge_num, edge_data_sz, edgeLookList, max_LookEdgeNum,
-                                    edgeLookList_src_stride, dx, dt, sx, st, max_k, group_max_sz, nthreads,
-                                    TOED_edges.data(), nrad, T(1));
-    timer.lap("CurveletCPU setup (copy edgeLookList)");
+    //> Curve bundle formation: build curvelets using greedy algorithm
+    CurveletCPU<T> CurveletCPU_obj( edge_num, edge_data_sz, csr_graph, dx, dt, sx, st, max_k, group_max_sz, nthreads, TOED_edges.data(), nrad );
 
     CurveletCPU_obj.build_curvelets_greedy();
     timer.lap("build_curvelets_greedy");
+    timer.summary();
 
     const unsigned out_h = CurveletCPU_obj.num_curvelets();
     const unsigned out_w = CurveletCPU_obj.chain_width();
@@ -91,10 +78,7 @@ bool run_curvelet(const std::string &out_chain_file, int nthreads, const Curvele
         }
     }
     write_double_array_to_file(chain_to_info_filename(out_chain_file), out_info, out_h, info_w);
-    timer.lap("write output");
-    timer.summary();
 
-    delete[] edgeLookList;
     delete[] out_chain;
     delete[] out_info;
 
@@ -115,9 +99,7 @@ int main(int argc, char **argv)
         return show_help ? 0 : 1;
     }
 
-    const bool ok = use_double
-        ? run_curvelet<double>(out_file, nthreads, params)
-        : run_curvelet<float>(out_file, nthreads, params);
+    const bool ok = use_double ? run_curvelet<double>(out_file, nthreads, params) : run_curvelet<float>(out_file, nthreads, params);
 
     return ok ? 0 : 1;
 }

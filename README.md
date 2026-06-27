@@ -10,7 +10,7 @@ For CPU implementation (``cpu_curvelet`` folder, with optional OpenMP parallelis
 | Folder | Description |
 |--------|------|
 | `original_code/` | Reference C++ from the official released code of the paper |
-| `cpu_curvelet/` | Rewritten CPU version (flat arrays) with OpenMP support |
+| `cpu_curvelet/` | Rewritten CPU version (flat arrays for edges and curve bundles) with OpenMP support |
 | `gpu_curvelet/` | (TBD) GPU port of the rewrite |
 | `test_files/` | Sample third-order edge files |
 
@@ -20,7 +20,7 @@ The rewrite (`cpu_curvelet`) keeps the same core math and replaces object-heavy 
 The code is tested under a Linux-based system (specifically red-hat and Ubuntu). It might also work on other systems but I have not yet tested. <br />
 (1) cmake 3.15.4 or higher <br />
 (2) gcc 10.2 or higher <br />
-(3) cuda 11.1.1 or higher for GPU impelemtation (to be tested/completed) <br />
+(3) cuda 11.1.1 or higher for GPU impelemtation <br />
 
 ## How to use the code
 (1) Navigate to either ``cpu_curvelet`` or `original_code`. <br />
@@ -32,10 +32,17 @@ $ make curvelet
 ```bash
 $ ./CURVELET
 ```
-When running under ``cpu_curvelet``, OpenMP parallelism is supported. The number of cores is 1 by default, which can be changed by the input argument `nthreads`, _i.e._,
+### Inputs
+There are multiple input arguments allowed to be specified at runtime. Their default values are defined in `cpu_curvelet/param_settings.hpp` or `gpu_curvelet/param_settings.hpp`. The mostly used input argument is the third-order edges file:
 ```bash
-$ ./CURVELET --nthreads 8   # OpenMP parallel build (default is 1 thread)
+$ ./CURVELET --edge-file your-edge-file.txt
 ```
+Example edge files live under `test_files/`. For CPU implementation, OpenMP parallelism is supported. The number of cores is 1 by default, which can be changed by setting `nthreads`, _i.e._,
+```bash
+$ ./CURVELET --nthreads 8
+```
+
+### Outputs
 Output chains and curvelet information are written under `outputs/`.
 
 ## Workflow of Curvelet Construction

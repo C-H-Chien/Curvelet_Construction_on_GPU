@@ -16,12 +16,11 @@ struct CurveletParams {
     unsigned curvelet_style = 2;
     unsigned group_max_sz = 4;
     unsigned out_type = 0;
-    unsigned max_look_edge_num = 0;
     double sx = 0.1;
     double st = 0.08;
-    unsigned look_edge_slots = 64;
-    std::string edge_file = "eth3d_cables2.txt";
+    std::string edge_file = "TO_edges_ABC_0006_thresh1.txt";
     int edge_data_sz = 4;
+    unsigned max_candidates = 128;
 };
 
 inline void print_usage(const char *prog)
@@ -41,11 +40,10 @@ inline void print_usage(const char *prog)
         << "  --curvelet-style <N>       Curvelet style (default: 2)\n"
         << "  --group-max-sz <N>         Maximum group size (default: 4)\n"
         << "  --out-type <N>             Output type (default: 0)\n"
-        << "  --max-look-edge-num <N>    Initial max look-edge count (default: 0)\n"
         << "  --sx <val>                 Position sampling step (default: 0.1)\n"
         << "  --st <val>                 Angle sampling step in radians (default: 0.08)\n"
-        << "  --look-edge-slots <N>      Look-edge table slots per edge (default: 64)\n"
         << "  --edge-data-sz <N>         Values per edge in input file (default: 4)\n"
+        << "  --max-candidates <N>       Max neighbors per anchor in CSR build (default: 128)\n"
         << "  --help                     Show this help message\n";
 }
 
@@ -135,20 +133,17 @@ inline bool parse_args(int argc, char **argv, CurveletParams &params,
         else if (std::strcmp(arg, "--out-type") == 0 && i + 1 < argc) {
             if (!parse_unsigned_arg(argv[++i], "--out-type", params.out_type)) return false;
         }
-        else if (std::strcmp(arg, "--max-look-edge-num") == 0 && i + 1 < argc) {
-            if (!parse_unsigned_arg(argv[++i], "--max-look-edge-num", params.max_look_edge_num)) return false;
-        }
         else if (std::strcmp(arg, "--sx") == 0 && i + 1 < argc) {
             if (!parse_double_arg(argv[++i], "--sx", params.sx)) return false;
         }
         else if (std::strcmp(arg, "--st") == 0 && i + 1 < argc) {
             if (!parse_double_arg(argv[++i], "--st", params.st)) return false;
         }
-        else if (std::strcmp(arg, "--look-edge-slots") == 0 && i + 1 < argc) {
-            if (!parse_unsigned_arg(argv[++i], "--look-edge-slots", params.look_edge_slots)) return false;
-        }
         else if (std::strcmp(arg, "--edge-data-sz") == 0 && i + 1 < argc) {
             if (!parse_int_arg(argv[++i], "--edge-data-sz", params.edge_data_sz)) return false;
+        }
+        else if (std::strcmp(arg, "--max-candidates") == 0 && i + 1 < argc) {
+            if (!parse_unsigned_arg(argv[++i], "--max-candidates", params.max_candidates)) return false;
         }
         else {
             std::cerr << "Unknown argument: " << arg << std::endl;
