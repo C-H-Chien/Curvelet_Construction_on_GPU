@@ -13,6 +13,7 @@
 
 #include "indices.hpp"
 #include "curvelet_utils.hpp"
+#include "preprocess.hpp"
 
 template<typename T>
 class CurveletCPU
@@ -22,21 +23,9 @@ protected:
     int _num_edges;
     unsigned _group_max_sz;
     int _max_num_look_edges;
-
-/*    //> target edge information
-    T te_id;
-    T te_pt_x;
-    T te_pt_y;
-    T te_orient;
-    T te_grad_mag; 
-
-    //> look edge information
-    T le_id;
-    T le_pt_x;
-    T le_pt_y;
-    T le_orient;
-    T le_grad_mag;
-*/
+    const T *_csr_edges;
+    const int *_neighbor_offsets;
+    const int *_neighbor_ids;
 
     T _dx; //< variation of edge in pixel
     T _dt; //< variation of angle in radians
@@ -54,22 +43,7 @@ protected:
 
     static const unsigned CURVELET_INFO_WIDTH = 10;
 
-//private:
-    
-    /*T *bundle_min_ks;
-    T *bundle_max_ks;
-    T *cmp_bundle_min_ks;
-    T *cmp_bundle_max_ks;
-    T *intersect_bundle_min_ks;
-    T *intersect_bundle_max_ks;
-
-    bool *hyp_LookEdge;
-    unsigned *edge_chain_final;         //< store all final curvelets by edge ids
-    unsigned *edge_chain_on_the_fly;    //< store a curvelet candidate on the fly
-    unsigned *edge_chain_target;        //< store curvelets w.r.t. target edge*/
-
 public:
-    T *_edgeLookList;
     int omp_threads;
     unsigned _num_curvelets;
     unsigned _max_curvelets;
@@ -77,35 +51,42 @@ public:
     unsigned *_anchor_chain_count;
     unsigned *_edge_chain_final;
     double *_curvelet_info;
-    
-    //> constructor
-    CurveletCPU(int &num_edges, int &sz_edge_data, T *edgeLookList, int max_LookEdgeNum,
-                int edgeLookList_src_stride,
-                T dx, T dt, T sx, T st, T max_k, unsigned group_max_sz, int nthreads,
-                T *to_edges, T nrad, T token_len):
-                _num_edges(num_edges), _sz_edge_data(sz_edge_data), _max_num_look_edges(max_LookEdgeNum),
-                _dx(dx), _dt(dt), _sx(sx), _st(st), _max_k(max_k), _nrad(nrad), 
-                _to_edges(to_edges), _group_max_sz(group_max_sz), omp_threads(nthreads),
-                _num_curvelets(0),
-                _max_per_anchor((unsigned)(max_LookEdgeNum + 1) * 2),
-                _max_curvelets((unsigned)num_edges * (unsigned)(max_LookEdgeNum + 1) * 2)
+
+    void init_curvelet_storage(int max_LookEdgeNum)
     {
+        _max_num_look_edges = max_LookEdgeNum;
+        _num_curvelets = 0;
+        _max_per_anchor = (unsigned)(max_LookEdgeNum + 1) * 2;
+        _max_curvelets = (unsigned)_num_edges * (unsigned)(max_LookEdgeNum + 1) * 2;
+
         _edge_chain_final = new unsigned[ _max_curvelets * (_group_max_sz + 1) ];
         _curvelet_info = new double[ _max_curvelets * CURVELET_INFO_WIDTH ]();
         _anchor_chain_count = new unsigned[ _num_edges ];
         for (int i = 0; i < _num_edges; i++) {
             _anchor_chain_count[i] = 0;
         }
-        _edgeLookList = new T[(_sz_edge_data+1) * (_max_num_look_edges+1) * _num_edges ];
-        const unsigned dst_cols = (unsigned)(_sz_edge_data + 1) * (unsigned)(_max_num_look_edges + 1);
-        for (unsigned i = 0; i < (unsigned)_num_edges; i++) {
-            for (unsigned j = 0; j < dst_cols; j++) {
-                _edgeLookList(i, j) = edgeLookList[i * edgeLookList_src_stride + j];
-            }
-        }
 
-        curves_num_in_bundle_pixel = 2*floor( _dx/_sx + 0.5 ) + 1;
-        curves_num_in_bundle_theta = 2*floor( _dt/_st + 0.5 ) + 1;
+        curves_num_in_bundle_pixel = 2 * floor( _dx / _sx + 0.5 ) + 1;
+        curves_num_in_bundle_theta = 2 * floor( _dt / _st + 0.5 ) + 1;
+    }
+
+    unsigned neighbor_count(unsigned te_idx) const
+    {
+        return static_cast<unsigned>(
+            _neighbor_offsets[te_idx + 1] - _neighbor_offsets[te_idx]);
+    }
+
+    CurveletCPU(int &num_edges, int &sz_edge_data, const CPUNeighborGraph<T> &csr,
+                T dx, T dt, T sx, T st, T max_k, unsigned group_max_sz, int nthreads,
+                T *to_edges, T nrad):
+                _num_edges(num_edges), _sz_edge_data(sz_edge_data),
+                _dx(dx), _dt(dt), _sx(sx), _st(st), _max_k(max_k), _nrad(nrad), 
+                _to_edges(to_edges), _group_max_sz(group_max_sz), omp_threads(nthreads),
+                _csr_edges(csr.edges.data()),
+                _neighbor_offsets(csr.neighbor_offsets.data()),
+                _neighbor_ids(csr.neighbor_ids.data())
+    {
+        init_curvelet_storage(static_cast<int>(csr.max_num_of_neighbors));
     }
 
     unsigned num_curvelets() const { return _num_curvelets; }
@@ -120,7 +101,7 @@ public:
     bool compute_curve_bundle( unsigned te_idx, unsigned le_idx, T* bundle_min_ks, T* bundle_max_ks, bool* hyp_LookEdg, 
                                T te_pt_x, T te_pt_y, T le_pt_x, T le_pt_y, T te_orient, T le_orient );
     bool bundle_valid_check( unsigned le_idx, T* bundle_min_ks, T* bundle_max_ks );
-    void retrieve_edge_data_from_edgeLookList(unsigned target_idx, unsigned look_idx, T &id, T &pt_x, T &pt_y, T &orient, T &strength);
+    void retrieve_edge_data(unsigned target_idx, unsigned look_idx, T &id, T &pt_x, T &pt_y, T &orient, T &strength);
 
     void move_to_cmp_bundle( unsigned cmp_idx, unsigned le_idx, bool rep_by_intersection, 
                              T* bundle_min_ks, T* bundle_max_ks, T* cmp_bundle_min_ks, T* cmp_bundle_max_ks,
@@ -172,13 +153,28 @@ void CurveletCPU<T>::preprocessing( T* bundle_min_ks, T* bundle_max_ks, bool* hy
 }
 
 template<typename T>
-void CurveletCPU<T>::retrieve_edge_data_from_edgeLookList(unsigned target_idx, unsigned look_idx, T &id, T &pt_x, T &pt_y, T &orient, T &strength)
+void CurveletCPU<T>::retrieve_edge_data(unsigned target_idx, unsigned look_idx, T &id, T &pt_x, T &pt_y, T &orient, T &strength)
 {
-    id       = _edgeLookList(target_idx, look_idx*5);
-    pt_x     = _edgeLookList(target_idx, look_idx*5 + 1);
-    pt_y     = _edgeLookList(target_idx, look_idx*5 + 2);
-    orient   = _edgeLookList(target_idx, look_idx*5 + 3);
-    strength = _edgeLookList(target_idx, look_idx*5 + 4);
+    int edge_id = 0;
+    if (look_idx == 0) {
+        edge_id = static_cast<int>(target_idx);
+    } else {
+        const unsigned nbr_slot = look_idx - 1;
+        const int nb_begin = _neighbor_offsets[target_idx];
+        const int nb_end = _neighbor_offsets[target_idx + 1];
+        if (static_cast<int>(nbr_slot) >= nb_end - nb_begin) {
+            id = T(-1);
+            return;
+        }
+        edge_id = _neighbor_ids[nb_begin + static_cast<int>(nbr_slot)];
+    }
+
+    const int ebase = edge_id * _sz_edge_data;
+    id       = T(edge_id);
+    pt_x     = _csr_edges[ebase + 0];
+    pt_y     = _csr_edges[ebase + 1];
+    orient   = _csr_edges[ebase + 2];
+    strength = _csr_edges[ebase + 3];
 }
 
 template<typename T>
@@ -376,10 +372,12 @@ void CurveletCPU<T>::build_curvelets_greedy( )
         preprocessing( bundle_min_ks, bundle_max_ks, hyp_LookEdge, edge_chain_on_the_fly, edge_chain_target);
 
         #pragma omp for schedule(dynamic)
-        for (unsigned te_idx = 0; te_idx < _num_edges; te_idx++) {
+        for (unsigned te_idx = 0; te_idx < (unsigned)_num_edges; te_idx++) {
+
+            const unsigned n_look = neighbor_count(te_idx);
 
             //> retrieve target edge data
-            retrieve_edge_data_from_edgeLookList(te_idx, 0, te_id, te_pt_x, te_pt_y, te_orient, te_grad_mag);
+            retrieve_edge_data(te_idx, 0, te_id, te_pt_x, te_pt_y, te_orient, te_grad_mag);
 
             //> for every target edge, try two times,
             //  each time goes different direction
@@ -389,13 +387,11 @@ void CurveletCPU<T>::build_curvelets_greedy( )
                 // cvlet_style=2 (anchor-leading bidirectional): ref_first is always true
                 const bool ref_first = true;
 
-                for (unsigned le_idx = 0; le_idx < (unsigned)_max_num_look_edges; le_idx++) {
+                for (unsigned le_idx = 0; le_idx < n_look; le_idx++) {
 
                     double filter_t0 = omp_get_wtime();
                     //> retrieve look edge data
-                    retrieve_edge_data_from_edgeLookList(te_idx, le_idx+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
-                    if (le_id < 0)
-                        break;
+                    retrieve_edge_data(te_idx, le_idx+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
 
                     //> compute the angle direction from target edge to look edges
                     const T _dir = angle_from_pt_to_pt(te_pt_x, te_pt_y, le_pt_x, le_pt_y);
@@ -436,7 +432,7 @@ void CurveletCPU<T>::build_curvelets_greedy( )
                     std::cout<<"look edge id:   ";
                     for ( unsigned i = 0; i < _max_num_look_edges; i++ ) {
                         if (hyp_LookEdge[i]) {
-                            retrieve_edge_data_from_edgeLookList(te_idx, i+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
+                            retrieve_edge_data(te_idx, i+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
                             std::cout<<le_id<<"  ";
                         }
                     }
@@ -444,7 +440,7 @@ void CurveletCPU<T>::build_curvelets_greedy( )
                     std::cout<<"look edge indx: ";
                     for ( unsigned i = 0; i < _max_num_look_edges; i++ ) {
                         if (hyp_LookEdge[i]) {
-                            retrieve_edge_data_from_edgeLookList(te_idx, i+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
+                            retrieve_edge_data(te_idx, i+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
                             std::cout<<i<<"  ";
                         }
                     }
@@ -485,7 +481,7 @@ void CurveletCPU<T>::build_curvelets_greedy( )
                 //  fix one and examine curve bundle intersections with all the rest,
                 //  and loop over all the look edges to do the same procedure
                 double growth_t0 = omp_get_wtime();
-                for (unsigned le_idx = 0; le_idx < (unsigned)_max_num_look_edges; le_idx++) {
+                for (unsigned le_idx = 0; le_idx < n_look; le_idx++) {
 
                     edge_chain_lidx = 0;
 
@@ -496,11 +492,11 @@ void CurveletCPU<T>::build_curvelets_greedy( )
                         move_to_cmp_bundle( 0, le_idx, false, bundle_min_ks, bundle_max_ks, cmp_bundle_min_ks, cmp_bundle_max_ks,
                                             intersect_bundle_min_ks, intersect_bundle_max_ks );
 
-                        for (unsigned le_remain_idx = 0; le_remain_idx < (unsigned)_max_num_look_edges; le_remain_idx++) {
+                        for (unsigned le_remain_idx = 0; le_remain_idx < n_look; le_remain_idx++) {
 
                             if (hyp_LookEdge[le_remain_idx]) {
 
-                                retrieve_edge_data_from_edgeLookList(te_idx, le_remain_idx+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
+                                retrieve_edge_data(te_idx, le_remain_idx+1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
 
                                 if (le_idx == le_remain_idx) {
 
@@ -949,7 +945,6 @@ bool CurveletCPU<T>::check_curvelet_exist( unsigned edge_chain_on_the_fly_sz, un
 
 template<typename T>
 CurveletCPU<T>::~CurveletCPU() {
-    delete[] _edgeLookList;
     delete[] _anchor_chain_count;
     delete[] _edge_chain_final;
     delete[] _curvelet_info;

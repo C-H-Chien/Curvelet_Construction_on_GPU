@@ -13,7 +13,7 @@ curvelet: main.o
 	g++ ${OPENMP} -o CURVELET main.o 
 
 main.o: main.cpp
-	g++ ${OPENMP} -c main.cpp -O3 -o main.o
+	g++ ${OPENMP} -c main.cpp -O3 -std=c++17 -o main.o
 
 clean:
 	rm -f curvelet *.o
