@@ -7,7 +7,6 @@
 #include <string>
 
 struct CurveletParams {
-    //> The following parameters are the default values for the curvelet construction
     double nrad = 3.5;
     double gap = 1.5;
     double dx = 0.4;
@@ -16,15 +15,10 @@ struct CurveletParams {
     unsigned curvelet_style = 2;
     unsigned group_max_sz = 4;
     unsigned out_type = 0;
-    unsigned max_look_edge_num = 0;
     double sx = 0.1;
     double st = 0.08;
-    unsigned look_edge_slots = 64;
     std::string edge_file = "TO_edges_ABC_0006_thresh1.txt";
     int edge_data_sz = 4;
-    // preprocess output: "csr", "edge-look-list", or "both"
-    std::string preprocess_layout = "csr";
-    // csr build: "single-pass", "two-pass", or "compare-csr"
     std::string csr_strategy = "single-pass";
     unsigned max_candidates = 128;
 };
@@ -45,11 +39,8 @@ inline void print_usage(const char *prog)
         << "  --curvelet-style <N>       Curvelet style (default: 2)\n"
         << "  --group-max-sz <N>         Maximum group size (default: 4)\n"
         << "  --out-type <N>             Output type (default: 0)\n"
-        << "  --max-look-edge-num <N>    Initial max look-edge count (default: 0)\n"
         << "  --sx <val>                 Position sampling step (default: 0.1)\n"
         << "  --st <val>                 Angle sampling step in radians (default: 0.08)\n"
-        << "  --look-edge-slots <N>      Look-edge table slots per edge (default: 64)\n"
-        << "  --preprocess-layout <mode> Preprocess output: csr | edge-look-list | both (default: csr)\n"
         << "  --csr-strategy <mode>      CSR build: single-pass | two-pass | compare-csr (default: single-pass)\n"
         << "  --max-candidates <N>       Max neighbors staged per anchor (default: 128)\n"
         << "  --edge-data-sz <N>         Values per edge in input file (default: 4)\n"
@@ -134,20 +125,11 @@ inline bool parse_args(int argc, char **argv, CurveletParams &params,
         else if (std::strcmp(arg, "--out-type") == 0 && i + 1 < argc) {
             if (!parse_unsigned_arg(argv[++i], "--out-type", params.out_type)) return false;
         }
-        else if (std::strcmp(arg, "--max-look-edge-num") == 0 && i + 1 < argc) {
-            if (!parse_unsigned_arg(argv[++i], "--max-look-edge-num", params.max_look_edge_num)) return false;
-        }
         else if (std::strcmp(arg, "--sx") == 0 && i + 1 < argc) {
             if (!parse_double_arg(argv[++i], "--sx", params.sx)) return false;
         }
         else if (std::strcmp(arg, "--st") == 0 && i + 1 < argc) {
             if (!parse_double_arg(argv[++i], "--st", params.st)) return false;
-        }
-        else if (std::strcmp(arg, "--look-edge-slots") == 0 && i + 1 < argc) {
-            if (!parse_unsigned_arg(argv[++i], "--look-edge-slots", params.look_edge_slots)) return false;
-        }
-        else if (std::strcmp(arg, "--preprocess-layout") == 0 && i + 1 < argc) {
-            params.preprocess_layout = argv[++i];
         }
         else if (std::strcmp(arg, "--csr-strategy") == 0 && i + 1 < argc) {
             params.csr_strategy = argv[++i];

@@ -1,7 +1,9 @@
-#ifndef GPU_DEV_PREPROCESS_CUH
-#define GPU_DEV_PREPROCESS_CUH
+#ifndef GPU_DEV_COMMON_CUH
+#define GPU_DEV_COMMON_CUH
 
 #include <cuda_runtime.h>
+
+constexpr int kEdgeFields = 4;
 
 __device__ __forceinline__ long long pack_cell_key(int x, int y)
 {
@@ -33,4 +35,4 @@ __device__ __forceinline__ int lower_bound_cell_keys(const long long *keys, int 
     return lo;
 }
 
-#endif // GPU_DEV_PREPROCESS_CUH
+#endif // GPU_DEV_COMMON_CUH
