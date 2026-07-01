@@ -20,7 +20,13 @@ struct CurveletParams {
     std::string edge_file = "TO_edges_ABC_0006_thresh1.txt";
     int edge_data_sz = 4;
     std::string csr_strategy = "single-pass";
+    std::string neighbor_layout = "csr";
     unsigned max_candidates = 128;
+    int neighbor_count_threads = 1;
+    int neighbor_fill_threads = 1;
+    int neighbor_stage_threads = 1;
+    int neighbor_warps_per_block = 4;
+    std::string fixed_row_build = "warp";
 };
 
 inline void print_usage(const char *prog)
@@ -41,8 +47,14 @@ inline void print_usage(const char *prog)
         << "  --out-type <N>             Output type (default: 0)\n"
         << "  --sx <val>                 Position sampling step (default: 0.1)\n"
         << "  --st <val>                 Angle sampling step in radians (default: 0.08)\n"
-        << "  --csr-strategy <mode>      CSR build: single-pass | two-pass | compare-csr (default: single-pass)\n"
-        << "  --max-candidates <N>       Max neighbors staged per anchor (default: 128)\n"
+        << "  --csr-strategy <mode>      CSR build: single-pass | two-pass (default: single-pass)\n"
+        << "  --neighbor-layout <mode>   Neighbor storage: csr | fixed-row (default: csr)\n"
+        << "  --fixed-row-build <mode>   Fixed-row build: warp | stage (default: warp)\n"
+        << "  --neighbor-warps-per-block <N>  Fixed-row warp build: warps/block (default: 4)\n"
+        << "  --max-candidates <N>       Max neighbors staged per anchor (default: 64)\n"
+        << "  --neighbor-count-threads <N>  Two-pass count kernel threads/block (default: 1)\n"
+        << "  --neighbor-fill-threads <N>   Two-pass fill kernel threads/block (default: 1)\n"
+        << "  --neighbor-stage-threads <N>  Single-pass stage/compact threads/block (default: 1)\n"
         << "  --edge-data-sz <N>         Values per edge in input file (default: 4)\n"
         << "  --help                     Show this help message\n";
 }
@@ -134,8 +146,26 @@ inline bool parse_args(int argc, char **argv, CurveletParams &params,
         else if (std::strcmp(arg, "--csr-strategy") == 0 && i + 1 < argc) {
             params.csr_strategy = argv[++i];
         }
+        else if (std::strcmp(arg, "--neighbor-layout") == 0 && i + 1 < argc) {
+            params.neighbor_layout = argv[++i];
+        }
+        else if (std::strcmp(arg, "--fixed-row-build") == 0 && i + 1 < argc) {
+            params.fixed_row_build = argv[++i];
+        }
+        else if (std::strcmp(arg, "--neighbor-warps-per-block") == 0 && i + 1 < argc) {
+            if (!parse_int_arg(argv[++i], "--neighbor-warps-per-block", params.neighbor_warps_per_block)) return false;
+        }
         else if (std::strcmp(arg, "--max-candidates") == 0 && i + 1 < argc) {
             if (!parse_unsigned_arg(argv[++i], "--max-candidates", params.max_candidates)) return false;
+        }
+        else if (std::strcmp(arg, "--neighbor-count-threads") == 0 && i + 1 < argc) {
+            if (!parse_int_arg(argv[++i], "--neighbor-count-threads", params.neighbor_count_threads)) return false;
+        }
+        else if (std::strcmp(arg, "--neighbor-fill-threads") == 0 && i + 1 < argc) {
+            if (!parse_int_arg(argv[++i], "--neighbor-fill-threads", params.neighbor_fill_threads)) return false;
+        }
+        else if (std::strcmp(arg, "--neighbor-stage-threads") == 0 && i + 1 < argc) {
+            if (!parse_int_arg(argv[++i], "--neighbor-stage-threads", params.neighbor_stage_threads)) return false;
         }
         else if (std::strcmp(arg, "--edge-data-sz") == 0 && i + 1 < argc) {
             if (!parse_int_arg(argv[++i], "--edge-data-sz", params.edge_data_sz)) return false;

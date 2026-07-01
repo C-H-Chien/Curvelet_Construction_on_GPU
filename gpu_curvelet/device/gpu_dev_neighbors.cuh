@@ -24,7 +24,8 @@ __device__ int discover_neighbors_by_binary_search(
     float rad_sqr,
     unsigned neighbor_radius,
     NeighborCandidate *out,
-    int max_out)
+    int max_out,
+    bool b_just_count = false)
 {
     const float te_x = dev_edges[te_idx * kEdgeFields + 0];
     const float te_y = dev_edges[te_idx * kEdgeFields + 1];
@@ -40,8 +41,7 @@ __device__ int discover_neighbors_by_binary_search(
         for (int px = cx - static_cast<int>(neighbor_radius); px <= cx + static_cast<int>(neighbor_radius); ++px) {
             
             const long long key = pack_cell_key(px, py);
-            const int cell_idx = lower_bound_cell_keys(
-                spatial.dev_unique_cells, spatial.num_cells, key);
+            const int cell_idx = lower_bound_cell_keys(spatial.dev_unique_cells, spatial.num_cells, key);
             if (cell_idx >= spatial.num_cells ||
                 spatial.dev_unique_cells[cell_idx] != key) {
                 continue;
@@ -66,7 +66,10 @@ __device__ int discover_neighbors_by_binary_search(
                     continue;
                 }
 
-                if (count < max_out) {
+                if (b_just_count) {
+                    ++count;
+                } 
+                else if (count < max_out) {
                     out[count].dist = dist;
                     out[count].edge_id = ne_idx;
                     ++count;
@@ -75,6 +78,58 @@ __device__ int discover_neighbors_by_binary_search(
         }
     }
     return count;
+}
+
+__device__ void append_neighbor_candidate(
+    NeighborCandidate *buf,
+    int *count_ptr,
+    int max_out,
+    float dist,
+    int edge_id)
+{
+    const int slot = atomicAdd(count_ptr, 1);
+    if (slot < max_out) {
+        buf[slot].dist = dist;
+        buf[slot].edge_id = edge_id;
+    }
+}
+
+__device__ void discover_cell_neighbors_warp_lane(
+    int te_idx,
+    int px,
+    int py,
+    float te_x,
+    float te_y,
+    const float *dev_edges,
+    const SpatialIndexDevice &spatial,
+    float rad_sqr,
+    NeighborCandidate *warp_buf,
+    int *warp_count,
+    int max_out)
+{
+    const long long key = pack_cell_key(px, py);
+    const int cell_idx = lower_bound_cell_keys(spatial.dev_unique_cells, spatial.num_cells, key);
+    if (cell_idx >= spatial.num_cells || spatial.dev_unique_cells[cell_idx] != key) {
+        return;
+    }
+
+    const int start = spatial.dev_cell_starts[cell_idx];
+    const int end = start + spatial.dev_cell_counts[cell_idx];
+    for (int k = start; k < end; ++k) {
+        const int ne_idx = spatial.dev_sorted_edge_ids[k];
+        if (ne_idx == te_idx) {
+            continue;
+        }
+
+        const float ne_x = dev_edges[ne_idx * kEdgeFields + 0];
+        const float ne_y = dev_edges[ne_idx * kEdgeFields + 1];
+        const float dist = sq_dist_dev(te_x, te_y, ne_x, ne_y);
+        if (dist > rad_sqr) {
+            continue;
+        }
+
+        append_neighbor_candidate(warp_buf, warp_count, max_out, dist, ne_idx);
+    }
 }
 
 __device__ void sort_neighbors_by_distance(NeighborCandidate *candidates, int count)

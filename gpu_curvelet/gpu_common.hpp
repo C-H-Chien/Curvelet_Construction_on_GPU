@@ -12,6 +12,7 @@
     } \
 } while (0)
 
+//> Used to determine the number of blocks for a kernel launch
 inline int div_up(int a, int b)
 {
     return (a + b - 1) / b;
