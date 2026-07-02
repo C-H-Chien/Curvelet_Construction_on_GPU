@@ -19,13 +19,13 @@ struct CurveletParams {
     double st = 0.08;
     std::string edge_file = "TO_edges_ABC_0006_thresh1.txt";
     int edge_data_sz = 4;
-    std::string csr_strategy = "single-pass";
-    std::string neighbor_layout = "csr";
-    unsigned max_candidates = 128;
+    std::string csr_strategy = "two-pass";
+    std::string neighbor_layout = "fixed-row";
+    unsigned max_candidates = 64;
     int neighbor_count_threads = 1;
     int neighbor_fill_threads = 1;
     int neighbor_stage_threads = 1;
-    int neighbor_warps_per_block = 4;
+    int neighbor_warps_per_block = 1;
     std::string fixed_row_build = "warp";
 };
 
@@ -47,10 +47,10 @@ inline void print_usage(const char *prog)
         << "  --out-type <N>             Output type (default: 0)\n"
         << "  --sx <val>                 Position sampling step (default: 0.1)\n"
         << "  --st <val>                 Angle sampling step in radians (default: 0.08)\n"
-        << "  --csr-strategy <mode>      CSR build: single-pass | two-pass (default: single-pass)\n"
-        << "  --neighbor-layout <mode>   Neighbor storage: csr | fixed-row (default: csr)\n"
+        << "  --csr-strategy <mode>      CSR build: single-pass | two-pass (default: two-pass)\n"
+        << "  --neighbor-layout <mode>   Neighbor storage: csr | fixed-row (default: fixed-row)\n"
         << "  --fixed-row-build <mode>   Fixed-row build: warp | stage (default: warp)\n"
-        << "  --neighbor-warps-per-block <N>  Fixed-row warp build: warps/block (default: 4)\n"
+        << "  --neighbor-warps-per-block <N>  Fixed-row warp build: warps/block (default: 1)\n"
         << "  --max-candidates <N>       Max neighbors staged per anchor (default: 64)\n"
         << "  --neighbor-count-threads <N>  Two-pass count kernel threads/block (default: 1)\n"
         << "  --neighbor-fill-threads <N>   Two-pass fill kernel threads/block (default: 1)\n"

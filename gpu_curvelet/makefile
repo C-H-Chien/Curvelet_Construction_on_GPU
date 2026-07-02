@@ -9,11 +9,15 @@ NVCCFLAGS += -gencode arch=compute_80,code=sm_80
 
 CXXFLAGS = -O3 -std=c++17 -I.
 
-curvelet: main.o gpu_preprocess.o
-	g++ ${INC} ${CXXFLAGS} -o CURVELET main.o gpu_preprocess.o ${LIBDIR} ${LIB}
+curvelet: main.o gpu_preprocess.o gpu_curve_bundle_formation.o
+	g++ ${INC} ${CXXFLAGS} -o CURVELET main.o gpu_preprocess.o gpu_curve_bundle_formation.o ${LIBDIR} ${LIB}
 
-main.o: main.cpp data_io.hpp param_settings.hpp gpu_common.hpp
+main.o: main.cpp data_io.hpp param_settings.hpp gpu_common.hpp gpu_curve_bundle_formation.hpp
 	g++ ${INC} ${CXXFLAGS} -c main.cpp -o main.o
+
+gpu_curve_bundle_formation.o: gpu_curve_bundle_formation.cu gpu_curve_bundle_formation.hpp gpu_common.hpp timer.hpp \
+		device/gpu_curve_bundle_formation_kernels.cuh gpu_dev_curve_bundle.cuh indices.hpp
+	nvcc ${INC} ${NVCCFLAGS} -c gpu_curve_bundle_formation.cu -o gpu_curve_bundle_formation.o
 
 gpu_preprocess.o: gpu_preprocess.cu gpu_preprocess.hpp gpu_common.hpp \
 		device/gpu_dev_common.cuh device/gpu_dev_neighbors.cuh device/gpu_preprocess_kernels.cuh

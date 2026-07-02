@@ -5,19 +5,16 @@
 //       An algorithm to form curvelet from input third order edge list using GPU
 ******************************************************************************/
 
-#include <iostream>
-#include <cmath>
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 #include <string>
 #include <vector>
+#define _USE_MATH_DEFINES // Must be before #include <cmath>
+#include <iostream>
+#include <cmath>
 
 #include "data_io.hpp"
 #include "param_settings.hpp"
 #include "gpu_preprocess.hpp"
-#include "gpu_curvelet.hpp"
+#include "gpu_curve_bundle_formation.hpp"
 #include "gpu_common.hpp"
 #include "timer.hpp"
 
@@ -120,8 +117,7 @@ bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, const Curve
 
         GPUCurveBundleStorage bundle_storage;
         GPUCurveletFormationResult bundle_result;
-        if (!gpu_curvelet_form_pairwise_bundles(
-                bundle_cfg, pre_result.csr, bundle_storage, bundle_result, &bundle_profiler)) {
+        if (!gpu_form_pairwise_bundles(bundle_cfg, pre_result.csr, bundle_storage, bundle_result, &bundle_profiler)) {
             gpu_curvelet_free_bundles(bundle_storage);
             gpu_preprocess_free(pre_result);
             return false;
@@ -129,11 +125,8 @@ bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, const Curve
         bundle_profiler.summary();
 
         std::cout << "Pairwise curve bundles formed (fixed-row warp): "
-                  << bundle_result.valid_pairs_forward << " forward, "
-                  << bundle_result.valid_pairs_backward << " backward valid pairs"
-                  << std::endl;
-        std::cout << "Chain growth / curvelet output not yet implemented on GPU."
-                  << std::endl;
+                  << bundle_result.valid_pairs << " valid pairs" << std::endl;
+        std::cout << "Chain growth / curvelet output not yet implemented on GPU." << std::endl;
 
         gpu_curvelet_free_bundles(bundle_storage);
     }
@@ -141,8 +134,7 @@ bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, const Curve
         std::cout << "CSR layout ready: " << pre_result.csr.total_neighbor_pairs
                   << " anchor-neighbor pairs, max number of neighbor edges per anchor = "
                   << pre_result.csr.max_neighbor_degree << std::endl;
-        std::cout << "GPU curve bundle formation requires --neighbor-layout fixed-row."
-                  << std::endl;
+        std::cout << "GPU curve bundle formation requires --neighbor-layout fixed-row." << std::endl;
     }
 
     gpu_preprocess_free(pre_result);
