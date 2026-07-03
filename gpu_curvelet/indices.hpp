@@ -1,34 +1,19 @@
 #ifndef INDICES_HPP
 #define INDICES_HPP
-// macros for flexible axis
 
-// Enablers
-#define ReadThirdOrderEdgesFromFile         (1)
+// Fixed-row bundle storage: dev_bundle_*[anchor * slots * bundle_cells + slot * bundle_cells + cell]
 
-// Third-Order Edge List for Pre-Processing
-#define TO_edges(i, j)                              TO_edges[(i) * sz_edge_data + (j)]
+#define bundle_min_ks_at(buf, slots, cells, anchor, slot, cell) \
+    (buf)[((size_t)(anchor) * (size_t)(slots) + (size_t)(slot)) * (size_t)(cells) + (size_t)(cell)]
 
-// Build Curvelets
-//#define _edgeLookList(i, j)             _edgeLookList[(i) * ((_sz_edge_data+1)*32) + (j)]
-#define _edgeLookList(i, j)             _edgeLookList[(i) * ((_sz_edge_data+1)*(_max_num_look_edges+1)) + (j)]
+#define bundle_max_ks_at(buf, slots, cells, anchor, slot, cell) \
+    (buf)[((size_t)(anchor) * (size_t)(slots) + (size_t)(slot)) * (size_t)(cells) + (size_t)(cell)]
 
+#define hyp_look_edge_at(buf, slots, anchor, slot) \
+    (buf)[(size_t)(anchor) * (size_t)(slots) + (size_t)(slot)]
 
-#define bundle_min_ks(i, j)             bundle_min_ks[(i) * (curves_num_in_bundle_pixel * curves_num_in_bundle_theta) + (j)]
-#define bundle_max_ks(i, j)             bundle_max_ks[(i) * (curves_num_in_bundle_pixel * curves_num_in_bundle_theta) + (j)]
-#define cmp_bundle_min_ks(i, j)     cmp_bundle_min_ks[(i) * (curves_num_in_bundle_pixel * curves_num_in_bundle_theta) + (j)]
-#define cmp_bundle_max_ks(i, j)     cmp_bundle_max_ks[(i) * (curves_num_in_bundle_pixel * curves_num_in_bundle_theta) + (j)]
-
-// Edge Chains
-#define edge_chain_target(i, j)     edge_chain_target[(i) * (_group_max_sz+1) + (j)]
-#define edge_chain_final(i, j)       edge_chain_final[(i) * (_group_max_sz+1) + (j)]
-
-//> USED BY GPU
-#define retr_edgeLookList(i, j)                   retr_edgeLookList[(i) * ((_sz_edge_data+1)*(_max_num_look_edges+1)) + (j)]
-#define sBundle_min_ks(i, j)                         sBundle_min_ks[(i) * (_curves_num_in_bundle_pixel * _curves_num_in_bundle_theta) + (j)]
-#define sBundle_max_ks(i, j)                         sBundle_max_ks[(i) * (_curves_num_in_bundle_pixel * _curves_num_in_bundle_theta) + (j)]
-#define rCmp_bundle_min_ks(i, j)                 rCmp_bundle_min_ks[(i) * (_curves_num_in_bundle_pixel * _curves_num_in_bundle_theta) + (j)]
-#define rCmp_bundle_max_ks(i, j)                 rCmp_bundle_max_ks[(i) * (_curves_num_in_bundle_pixel * _curves_num_in_bundle_theta) + (j)]
-#define sTarget_edge_chain_lead(i, j)       sTarget_edge_chain_lead[(i) * (_group_max_sz) + (j)]
-#define sTarget_edge_chain_nonlead(i, j) sTarget_edge_chain_nonlead[(i) * (_group_max_sz) + (j)]
+//> TODO: update these when edge chain growth is implemented
+#define cmp_bundle_min_ks(i, j) cmp_bundle_min_ks[(i) * bundle_cells + (j)]
+#define cmp_bundle_max_ks(i, j) cmp_bundle_max_ks[(i) * bundle_cells + (j)]
 
 #endif // INDICES_HPP
