@@ -26,6 +26,18 @@ static GPUNeighborCSRStrategy parse_csr_strategy(const std::string &mode)
     return GPUNeighborCSRStrategy::SinglePass;
 }
 
+static GPUNeighborCSRDiscoverMode parse_csr_discover_mode(const std::string &mode)
+{
+    if (mode == "warp") {
+        return GPUNeighborCSRDiscoverMode::Warp;
+    }
+    if (mode != "thread") {
+        std::cerr << "Warning: unknown csr discover mode '" << mode
+                  << "', using thread (expected: thread | warp)\n";
+    }
+    return GPUNeighborCSRDiscoverMode::Thread;
+}
+
 static GPUFixedRowBuildStrategy parse_fixed_row_build(const std::string &mode)
 {
     if (mode == "stage") {
@@ -79,6 +91,7 @@ bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, const Curve
     pre_cfg.neighbor_radius = 3;
     pre_cfg.rad = nrad;
     pre_cfg.csr_strategy = parse_csr_strategy(params.csr_strategy);
+    pre_cfg.csr_discover_mode = parse_csr_discover_mode(params.csr_discover_mode);
     pre_cfg.neighbor_layout = parse_neighbor_layout(params.neighbor_layout);
     pre_cfg.max_candidates = params.max_candidates;
     pre_cfg.neighbor_count_threads = params.neighbor_count_threads;

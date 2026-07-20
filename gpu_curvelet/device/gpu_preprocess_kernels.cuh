@@ -209,6 +209,206 @@ __global__ void discover_fixed_row_warp_kernel(
     }
 }
 
+//> Single-pass CSR: one warp per anchor discovers 7x7 cells in parallel, stages ids/dist.
+__global__ void discover_and_stage_neighbors_warp_kernel(
+    int num_edges,
+    int max_candidates,
+    int warps_per_block,
+    SpatialIndexDevice spatial,
+    float rad_sqr,
+    unsigned neighbor_radius,
+    int *dev_staged_counts,
+    int *dev_staged_ids,
+    float *dev_staged_dist2,
+    unsigned *dev_max_num_of_neighbors,
+    unsigned *dev_truncated_anchors)
+{
+    extern __shared__ unsigned char raw_shmem[];
+
+    const int lane = threadIdx.x & 31;
+    const int warp_id = threadIdx.x >> 5;
+    const int anchor_edge_idx = blockIdx.x * warps_per_block + warp_id;
+
+    const size_t buf_bytes = static_cast<size_t>(warps_per_block) * static_cast<size_t>(max_candidates) * sizeof(NeighborCandidate);
+    NeighborCandidate *warp_bufs = reinterpret_cast<NeighborCandidate *>(raw_shmem);
+    int *warp_counts = reinterpret_cast<int *>(raw_shmem + buf_bytes);
+
+    NeighborCandidate *my_buf = warp_bufs + static_cast<size_t>(warp_id) * static_cast<size_t>(max_candidates);
+
+    if (anchor_edge_idx < num_edges) {
+        if (lane == 0) {
+            warp_counts[warp_id] = 0;
+        }
+        __syncwarp();
+
+        const float te_x = spatial.dev_edges[anchor_edge_idx * kEdgeFields + 0];
+        const float te_y = spatial.dev_edges[anchor_edge_idx * kEdgeFields + 1];
+        const int cx = static_cast<int>(lrintf(te_x));
+        const int cy = static_cast<int>(lrintf(te_y));
+        const int side = 2 * static_cast<int>(neighbor_radius) + 1;
+        const int num_cells = side * side;
+
+        for (int cell = lane; cell < num_cells; cell += 32) {
+            const int cell_dy = cell / side;
+            const int cell_dx = cell % side;
+            const int px = cx - static_cast<int>(neighbor_radius) + cell_dx;
+            const int py = cy - static_cast<int>(neighbor_radius) + cell_dy;
+            discover_cell_neighbors_warp_lane(
+                anchor_edge_idx, px, py, te_x, te_y,
+                spatial.dev_edges, spatial, rad_sqr,
+                my_buf, &warp_counts[warp_id], max_candidates);
+        }
+        __syncwarp();
+
+        int count = 0;
+        if (lane == 0) {
+            const int raw_count = warp_counts[warp_id];
+            count = raw_count;
+            if (raw_count >= max_candidates) {
+                count = max_candidates;
+                atomicAdd(dev_truncated_anchors, 1u);
+            }
+            sort_neighbors_by_distance(my_buf, count);
+            dev_staged_counts[anchor_edge_idx] = count;
+            if (count > 0) {
+                atomicMax(dev_max_num_of_neighbors, static_cast<unsigned>(count));
+            }
+            warp_counts[warp_id] = count;
+        }
+        __syncwarp();
+        count = warp_counts[warp_id];
+
+        const int base = anchor_edge_idx * max_candidates;
+        if (lane < count) {
+            dev_staged_ids[base + lane] = my_buf[lane].edge_id;
+            dev_staged_dist2[base + lane] = my_buf[lane].dist;
+        }
+        for (int k = count + lane; k < max_candidates; k += 32) {
+            dev_staged_ids[base + k] = -1;
+            dev_staged_dist2[base + k] = 0.f;
+        }
+    }
+}
+
+//> Two-pass CSR count: one warp per anchor; lanes scan 7x7 cells in parallel.
+__global__ void count_neighbors_warp_kernel(
+    int num_edges,
+    int warps_per_block,
+    SpatialIndexDevice spatial,
+    float rad_sqr,
+    unsigned neighbor_radius,
+    int *dev_neighbor_counts,
+    unsigned *dev_max_num_of_neighbors)
+{
+    extern __shared__ int warp_counts[];
+
+    const int lane = threadIdx.x & 31;
+    const int warp_id = threadIdx.x >> 5;
+    const int anchor_edge_idx = blockIdx.x * warps_per_block + warp_id;
+
+    if (anchor_edge_idx < num_edges) {
+        if (lane == 0) {
+            warp_counts[warp_id] = 0;
+        }
+        __syncwarp();
+
+        const float te_x = spatial.dev_edges[anchor_edge_idx * kEdgeFields + 0];
+        const float te_y = spatial.dev_edges[anchor_edge_idx * kEdgeFields + 1];
+        const int cx = static_cast<int>(lrintf(te_x));
+        const int cy = static_cast<int>(lrintf(te_y));
+        const int side = 2 * static_cast<int>(neighbor_radius) + 1;
+        const int num_cells = side * side;
+
+        for (int cell = lane; cell < num_cells; cell += 32) {
+            const int cell_dy = cell / side;
+            const int cell_dx = cell % side;
+            const int px = cx - static_cast<int>(neighbor_radius) + cell_dx;
+            const int py = cy - static_cast<int>(neighbor_radius) + cell_dy;
+            discover_cell_neighbors_warp_lane_count_only(
+                anchor_edge_idx, px, py, te_x, te_y,
+                spatial.dev_edges, spatial, rad_sqr,
+                &warp_counts[warp_id]);
+        }
+        __syncwarp();
+
+        if (lane == 0) {
+            const int count = warp_counts[warp_id];
+            dev_neighbor_counts[anchor_edge_idx] = count;
+            if (count > 0) {
+                atomicMax(dev_max_num_of_neighbors, static_cast<unsigned>(count));
+            }
+        }
+    }
+}
+
+//> Two-pass CSR fill: one warp per anchor rediscovers neighbors and writes CSR slice.
+__global__ void fill_csr_neighbors_warp_kernel(
+    int num_edges,
+    unsigned max_num_of_neighbors,
+    int warps_per_block,
+    SpatialIndexDevice spatial,
+    float rad_sqr,
+    unsigned neighbor_radius,
+    const int *dev_neighbor_counts,
+    const int *dev_neighbor_offsets,
+    int *dev_neighbor_ids,
+    float *dev_neighbor_dist2)
+{
+    extern __shared__ unsigned char raw_shmem[];
+
+    const int lane = threadIdx.x & 31;
+    const int warp_id = threadIdx.x >> 5;
+    const int anchor_edge_idx = blockIdx.x * warps_per_block + warp_id;
+
+    const size_t buf_bytes = static_cast<size_t>(warps_per_block) * static_cast<size_t>(max_num_of_neighbors) * sizeof(NeighborCandidate);
+    NeighborCandidate *warp_bufs = reinterpret_cast<NeighborCandidate *>(raw_shmem);
+    int *warp_counts = reinterpret_cast<int *>(raw_shmem + buf_bytes);
+
+    NeighborCandidate *my_buf = warp_bufs + static_cast<size_t>(warp_id) * static_cast<size_t>(max_num_of_neighbors);
+
+    if (anchor_edge_idx < num_edges) {
+        const int neighbor_count = dev_neighbor_counts[anchor_edge_idx];
+        if (lane == 0) {
+            warp_counts[warp_id] = 0;
+        }
+        __syncwarp();
+
+        const float te_x = spatial.dev_edges[anchor_edge_idx * kEdgeFields + 0];
+        const float te_y = spatial.dev_edges[anchor_edge_idx * kEdgeFields + 1];
+        const int cx = static_cast<int>(lrintf(te_x));
+        const int cy = static_cast<int>(lrintf(te_y));
+        const int side = 2 * static_cast<int>(neighbor_radius) + 1;
+        const int num_cells = side * side;
+
+        for (int cell = lane; cell < num_cells; cell += 32) {
+            const int cell_dy = cell / side;
+            const int cell_dx = cell % side;
+            const int px = cx - static_cast<int>(neighbor_radius) + cell_dx;
+            const int py = cy - static_cast<int>(neighbor_radius) + cell_dy;
+            discover_cell_neighbors_warp_lane(
+                anchor_edge_idx, px, py, te_x, te_y,
+                spatial.dev_edges, spatial, rad_sqr,
+                my_buf, &warp_counts[warp_id], neighbor_count);
+        }
+        __syncwarp();
+
+        int count = 0;
+        if (lane == 0) {
+            count = warp_counts[warp_id];
+            sort_neighbors_by_distance(my_buf, count);
+            warp_counts[warp_id] = count;
+        }
+        __syncwarp();
+        count = warp_counts[warp_id];
+
+        const int base = dev_neighbor_offsets[anchor_edge_idx];
+        if (lane < count) {
+            dev_neighbor_ids[base + lane] = my_buf[lane].edge_id;
+            dev_neighbor_dist2[base + lane] = my_buf[lane].dist;
+        }
+    }
+}
+
 //> Copy staged per-anchor rows into compact CSR arrays (no neighbor rediscovery).
 __global__ void compact_staged_neighbors_kernel(
     int num_edges,

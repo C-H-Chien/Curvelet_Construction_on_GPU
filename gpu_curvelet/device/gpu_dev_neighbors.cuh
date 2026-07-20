@@ -132,6 +132,42 @@ __device__ void discover_cell_neighbors_warp_lane(
     }
 }
 
+__device__ void discover_cell_neighbors_warp_lane_count_only(
+    int te_idx,
+    int px,
+    int py,
+    float te_x,
+    float te_y,
+    const float *dev_edges,
+    const SpatialIndexDevice &spatial,
+    float rad_sqr,
+    int *warp_count)
+{
+    const long long key = pack_cell_key(px, py);
+    const int cell_idx = lower_bound_cell_keys(spatial.dev_unique_cells, spatial.num_cells, key);
+    if (cell_idx >= spatial.num_cells || spatial.dev_unique_cells[cell_idx] != key) {
+        return;
+    }
+
+    const int start = spatial.dev_cell_starts[cell_idx];
+    const int end = start + spatial.dev_cell_counts[cell_idx];
+    for (int k = start; k < end; ++k) {
+        const int ne_idx = spatial.dev_sorted_edge_ids[k];
+        if (ne_idx == te_idx) {
+            continue;
+        }
+
+        const float ne_x = dev_edges[ne_idx * kEdgeFields + 0];
+        const float ne_y = dev_edges[ne_idx * kEdgeFields + 1];
+        const float dist = sq_dist_dev(te_x, te_y, ne_x, ne_y);
+        if (dist > rad_sqr) {
+            continue;
+        }
+
+        atomicAdd(warp_count, 1);
+    }
+}
+
 __device__ void sort_neighbors_by_distance(NeighborCandidate *candidates, int count)
 {
     for (int i = 1; i < count; ++i) {

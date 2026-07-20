@@ -20,6 +20,7 @@ struct CurveletParams {
     std::string edge_file = "TO_edges_ABC_0006_thresh1.txt";
     int edge_data_sz = 4;
     std::string csr_strategy = "two-pass";
+    std::string csr_discover_mode = "thread";
     std::string neighbor_layout = "fixed-row";
     unsigned max_candidates = 64;
     int neighbor_count_threads = 1;
@@ -48,9 +49,10 @@ inline void print_usage(const char *prog)
         << "  --sx <val>                 Position sampling step (default: 0.1)\n"
         << "  --st <val>                 Angle sampling step in radians (default: 0.08)\n"
         << "  --csr-strategy <mode>      CSR build: single-pass | two-pass (default: two-pass)\n"
+        << "  --csr-discover <mode>      CSR discover, using warp or thread per anchor edge: thread | warp (default: thread)\n"
         << "  --neighbor-layout <mode>   Neighbor storage: csr | fixed-row (default: fixed-row)\n"
         << "  --fixed-row-build <mode>   Fixed-row build: warp | stage (default: warp)\n"
-        << "  --neighbor-warps-per-block <N>  Fixed-row warp build: warps/block (default: 1)\n"
+        << "  --neighbor-warps-per-block <N>  Warp-per-anchor discover: warps/block (default: 1)\n"
         << "  --max-candidates <N>       Max neighbors staged per anchor (default: 64)\n"
         << "  --neighbor-count-threads <N>  Two-pass count kernel threads/block (default: 1)\n"
         << "  --neighbor-fill-threads <N>   Two-pass fill kernel threads/block (default: 1)\n"
@@ -145,6 +147,9 @@ inline bool parse_args(int argc, char **argv, CurveletParams &params,
         }
         else if (std::strcmp(arg, "--csr-strategy") == 0 && i + 1 < argc) {
             params.csr_strategy = argv[++i];
+        }
+        else if (std::strcmp(arg, "--csr-discover") == 0 && i + 1 < argc) {
+            params.csr_discover_mode = argv[++i];
         }
         else if (std::strcmp(arg, "--neighbor-layout") == 0 && i + 1 < argc) {
             params.neighbor_layout = argv[++i];
