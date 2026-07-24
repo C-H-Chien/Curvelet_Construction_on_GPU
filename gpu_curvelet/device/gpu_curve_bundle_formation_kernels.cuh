@@ -6,7 +6,6 @@
 
 //> curve bundle formation
 //> Configuration: one warp per anchor_id edge, one thread per anchor_id-neighbor edge pair.
-//> Each thread initializes a default bundle and computes the curvature range as a representation of a curve bundle.
 //> Direction filtering (forward/backward) is deferred to chain growth; pairwise transport is direction-agnostic.
 __global__ void curve_bundle_formation_kernel(
     int num_edges,
@@ -34,10 +33,10 @@ __global__ void curve_bundle_formation_kernel(
     const int lane = threadIdx.x & 31;
     const int warp_id = threadIdx.x >> 5;
 
-    //> TODO: if number of warps per block is constant, calculate offset_in_dev_edges and lbase outside of the kernel and pass them as kernel arguments.
+    //> Retrieve the anchor edge id corresponding to dev_edges
     const int anchor_id = blockIdx.x * warps_per_block + warp_id;
 
-    //> Retrieve the anchor edge data
+    //> Retrieve the anchor edge data from dev_edges
     const int anchor_offset_in_dev_edges = anchor_id * sz_edge_data;
     const float anchor_edge_x            = dev_edges[anchor_offset_in_dev_edges + 0];
     const float anchor_edge_y            = dev_edges[anchor_offset_in_dev_edges + 1];
@@ -58,17 +57,12 @@ __global__ void curve_bundle_formation_kernel(
     //> Loop over all neighbor edges
     for (int slot = lane; slot < slots_per_anchor; slot += 32) {
         const size_t hyp_idx = static_cast<size_t>(anchor_id) * static_cast<size_t>(slots_per_anchor) + static_cast<size_t>(slot);
-        float *slot_min = dev_bundle_min_ks + anchor_bundle_base + static_cast<size_t>(slot) * bundle_cells;
-        float *slot_max = dev_bundle_max_ks + anchor_bundle_base + static_cast<size_t>(slot) * bundle_cells;
+        float *slot_min = dev_bundle_min_ks + anchor_bundle_base + static_cast<size_t>(slot) * static_cast<size_t>(bundle_cells);
+        float *slot_max = dev_bundle_max_ks + anchor_bundle_base + static_cast<size_t>(slot) * static_cast<size_t>(bundle_cells);
 
         if (slot >= num_of_neighbor_edges) {
             dev_hyp_look_edge[hyp_idx] = 0;
             continue;
-        }
-
-        for (int b = 0; b < bundle_cells; ++b) {
-            slot_min[b] = -max_k;
-            slot_max[b] = max_k;
         }
 
         //> Retrieve the neighbor edge data

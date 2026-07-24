@@ -1,7 +1,8 @@
 
 #include <cmath>
 
-//> Compute curvature bounds for one anchor-neighbor pair into slot-local bundle arrays.
+//> Compute curvature bounds for one anchor-neighbor pair into contiguous slot-local arrays.
+//> Accumulates each cell in registers, then issues one store to global memory per cell.
 __device__ __inline__ bool
 get_circular_arc_bundle_transport(
     float dx, float dt, float sx, float st, float max_k,
@@ -11,12 +12,21 @@ get_circular_arc_bundle_transport(
     float anchor_cos, float anchor_sin,
     float neighbor_edge_x, float neighbor_edge_y, float neighbor_edge_theta)
 {
-    unsigned bk_idx = 0;
+    const int bundle_cells = curves_num_in_bundle_pixel * curves_num_in_bundle_theta;
 
     const float DX = anchor_edge_x - neighbor_edge_x;
     const float DY = anchor_edge_y - neighbor_edge_y;
     const float DX2 = DX * DX;
     const float DY2 = DY * DY;
+
+    //> If the anchor and neighbor edges are too close, keep the default bundle (+/- max_k).
+    if (DX2 + DY2 < 4.f * dx * dx) {
+        for (int b = 0; b < bundle_cells; ++b) {
+            slot_min_ks[b] = -max_k;
+            slot_max_ks[b] = max_k;
+        }
+        return true;
+    }
 
     const float sin_T0_p_dt = sinf(neighbor_edge_theta + dt);
     const float cos_T0_p_dt = cosf(neighbor_edge_theta + dt);
@@ -27,53 +37,43 @@ get_circular_arc_bundle_transport(
     const float sin_T0mdt_times_DY = DY * sin_T0_m_dt;
     const float cos_T0mdt_times_DX = DX * cos_T0_m_dt;
 
+    //> sin/cos(T2 - (T0 +/- dt)) via angle-addition identities
     const float sin_T2_m_T0_m_dt = anchor_sin * cos_T0_m_dt - anchor_cos * sin_T0_m_dt;
     const float cos_T2_m_T0_m_dt = anchor_cos * cos_T0_m_dt + anchor_sin * sin_T0_m_dt;
     const float sin_T2_m_T0_p_dt = anchor_sin * cos_T0_p_dt - anchor_cos * sin_T0_p_dt;
     const float cos_T2_m_T0_p_dt = anchor_cos * cos_T0_p_dt + anchor_sin * sin_T0_p_dt;
 
-    float k_dx_min, k_dx_max;
-    float k_dt_min, k_dt_max;
-    float delta_x2;
-    float delta_t2;
-    float tt;
-    float eq_denom;
-    float sin_t2_p_dt2_m_t0_m_dt;
-    float sin_t2_p_dt2_m_t0_p_dt;
-    float cos_dt2;
-    float sin_dt2;
-
-    //> If the anchor and neighbor edges are too close to each other, the curve bundle is essentially valid
-    if (DX2 + DY2 < 4.f * dx * dx) {
-        return true;
-    }
-
     const bool alternate_transport = (DX * anchor_cos + DY * anchor_sin) >= 0.f;
+
+    bool any_valid_cell = false;
+    unsigned bk_idx = 0;
 
     for (int i = 0; i < curves_num_in_bundle_pixel; i++) {
         for (int j = 0; j < curves_num_in_bundle_theta; j++) {
-            delta_x2 = sx * (static_cast<float>(i) - (static_cast<float>(curves_num_in_bundle_pixel) - 1.f) / 2.f);
-            delta_t2 = st * (static_cast<float>(j) - (static_cast<float>(curves_num_in_bundle_theta) - 1.f) / 2.f);
+            const float delta_x2 = sx * (static_cast<float>(i) - (static_cast<float>(curves_num_in_bundle_pixel) - 1.f) / 2.f);
+            const float delta_t2 = st * (static_cast<float>(j) - (static_cast<float>(curves_num_in_bundle_theta) - 1.f) / 2.f);
 
-            cos_dt2 = cosf(delta_t2);
-            sin_dt2 = sinf(delta_t2);
-            tt = (anchor_sin * cos_dt2 + anchor_cos * sin_dt2) * DX - (anchor_cos * cos_dt2 - anchor_sin * sin_dt2) * DY;
-            eq_denom = (-2.f * delta_x2 * tt + DX2 + DY2 - dx * dx + delta_x2 * delta_x2);
+            const float cos_dt2 = cosf(delta_t2);
+            const float sin_dt2 = sinf(delta_t2);
+            const float tt = (anchor_sin * cos_dt2 + anchor_cos * sin_dt2) * DX - (anchor_cos * cos_dt2 - anchor_sin * sin_dt2) * DY;
+            const float eq_denom = (-2.f * delta_x2 * tt + DX2 + DY2 - dx * dx + delta_x2 * delta_x2);
 
-            k_dx_min = 2.f * (tt - delta_x2 - dx) / eq_denom;
-            k_dx_max = 2.f * (tt - delta_x2 + dx) / eq_denom;
+            const float k_dx_min = 2.f * (tt - delta_x2 - dx) / eq_denom;
+            const float k_dx_max = 2.f * (tt - delta_x2 + dx) / eq_denom;
 
-            //> Update the bundle min and max curvature bounds based on location perturbation
-            if (slot_min_ks[bk_idx] < k_dx_min) {
-                slot_min_ks[bk_idx] = k_dx_min;
+            float cell_min = -max_k;
+            float cell_max = max_k;
+            if (cell_min < k_dx_min) {
+                cell_min = k_dx_min;
             }
-            if (slot_max_ks[bk_idx] > k_dx_max) {
-                slot_max_ks[bk_idx] = k_dx_max;
+            if (cell_max > k_dx_max) {
+                cell_max = k_dx_max;
             }
 
-            sin_t2_p_dt2_m_t0_m_dt = sin_T2_m_T0_m_dt * cos_dt2 + cos_T2_m_T0_m_dt * sin_dt2;
-            sin_t2_p_dt2_m_t0_p_dt = sin_T2_m_T0_p_dt * cos_dt2 + cos_T2_m_T0_p_dt * sin_dt2;
+            const float sin_t2_p_dt2_m_t0_m_dt = sin_T2_m_T0_m_dt * cos_dt2 + cos_T2_m_T0_m_dt * sin_dt2;
+            const float sin_t2_p_dt2_m_t0_p_dt = sin_T2_m_T0_p_dt * cos_dt2 + cos_T2_m_T0_p_dt * sin_dt2;
 
+            float k_dt_min, k_dt_max;
             if (alternate_transport) {
                 k_dt_max = sin_t2_p_dt2_m_t0_m_dt / (-sin_t2_p_dt2_m_t0_m_dt * delta_x2 + cos_T0mdt_times_DX + sin_T0mdt_times_DY);
                 k_dt_min = sin_t2_p_dt2_m_t0_p_dt / (-sin_t2_p_dt2_m_t0_p_dt * delta_x2 + cos_T0pdt_times_DX + sin_T0pdt_times_DY);
@@ -83,29 +83,27 @@ get_circular_arc_bundle_transport(
                 k_dt_max = sin_t2_p_dt2_m_t0_p_dt / (-sin_t2_p_dt2_m_t0_p_dt * delta_x2 + cos_T0pdt_times_DX + sin_T0pdt_times_DY);
             }
 
-            //> Update the bundle min and max curvature bounds based on orientation perturbation
-            if (slot_min_ks[bk_idx] < k_dt_min) {
-                slot_min_ks[bk_idx] = k_dt_min;
+            if (cell_min < k_dt_min) {
+                cell_min = k_dt_min;
             }
-            if (slot_max_ks[bk_idx] > k_dt_max) {
-                slot_max_ks[bk_idx] = k_dt_max;
+            if (cell_max > k_dt_max) {
+                cell_max = k_dt_max;
             }
 
+            slot_min_ks[bk_idx] = cell_min;
+            slot_max_ks[bk_idx] = cell_max;
+            if (cell_max > cell_min) {
+                any_valid_cell = true;
+            }
             bk_idx++;
         }
     }
 
-    const int bundle_cells = curves_num_in_bundle_pixel * curves_num_in_bundle_theta;
-    for (int k_idx = 0; k_idx < bundle_cells; k_idx++) {
-        //> Check if the curve bundle is valid
-        if (slot_max_ks[k_idx] > slot_min_ks[k_idx]) {
-            return true;
-        }
-    }
-    return false;
+    return any_valid_cell;
 }
 
-//> Copy one slot bundle into the compare buffer (chain growth stage).
+//>=============== The following device functions are used in the edge chain growth stage ===============
+//> Copy one slot bundle into the compare buffer.
 __device__ __inline__ void
 move_to_cmp_bundle(
     int cmp_idx, bool rep_by_intersection, int bundle_cells,
@@ -118,8 +116,7 @@ move_to_cmp_bundle(
             cmp_bundle_min_ks[cmp_idx * bundle_cells + bidx] = slot_min_ks[bidx];
             cmp_bundle_max_ks[cmp_idx * bundle_cells + bidx] = slot_max_ks[bidx];
         }
-    } 
-    else {
+    } else {
         for (int bidx = 0; bidx < bundle_cells; bidx++) {
             cmp_bundle_min_ks[cmp_idx * bundle_cells + bidx] = intersect_bundle_min_ks[bidx];
             cmp_bundle_max_ks[cmp_idx * bundle_cells + bidx] = intersect_bundle_max_ks[bidx];

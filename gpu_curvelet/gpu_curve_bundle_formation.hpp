@@ -13,6 +13,8 @@ struct GPUCurveletConfig {
     float sx = 0.1f;
     float st = 0.08f;
     float max_k = 0.3f;
+    float nrad = 3.5f;
+    int group_max_sz = 4;
     int sz_edge_data = 4;
     int bundle_warps_per_block = 4;
 };
@@ -24,6 +26,7 @@ struct GPUCurveBundleStorage {
     int slots_per_anchor = 0;
     int num_edges = 0;
 
+    //> Slot-major within each anchor: [anchor][slot][cell]
     float *dev_bundle_min_ks = nullptr;
     float *dev_bundle_max_ks = nullptr;
     unsigned char *dev_hyp_look_edge = nullptr;

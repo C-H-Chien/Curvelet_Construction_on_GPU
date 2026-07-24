@@ -28,6 +28,7 @@ void launch_curve_bundle_formation_kernel(
         return;
     }
 
+    //> Assign one warp per anchor edge. Each thread in the warp processes one anchor-neighbor pair to form a curve bundle hypothesis.
     const int threads_per_block = warps_per_block * 32;
     const int num_blocks = div_up(graph.num_edges, warps_per_block);
     const size_t shmem_bytes = static_cast<size_t>(warps_per_block) * 2 * sizeof(float);
@@ -136,6 +137,7 @@ bool gpu_form_pairwise_bundles(
 
     //> Launch the curve bundle formation kernel
     launch_curve_bundle_formation_kernel(cfg, graph, storage, dev_valid_pair_count);
+    cudacheck(cudaDeviceSynchronize());
     profile_lap(profiler, TimerCategory::Kernel, "form_pairwise_bundles");
 
     //> Copy the valid-pair count from GPU to host
