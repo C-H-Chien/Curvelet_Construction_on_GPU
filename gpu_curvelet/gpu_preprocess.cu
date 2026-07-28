@@ -484,7 +484,7 @@ bool build_CSR_graph_twopass(
 
     graph.num_edges = cfg.num_edges;
     graph.total_neighbor_pairs = total_pairs;
-    graph.max_neighbor_degree = max_num_of_neighbors;
+    graph.max_num_of_neighbors = max_num_of_neighbors;
     graph.layout = GPUNeighborLayout::CSR;
     graph.dev_edges = index.dev_edges;
     graph.dev_neighbor_offsets = dev_neighbor_offsets;
@@ -719,7 +719,7 @@ bool build_neighbor_graph_fixed_row(
     graph.layout = GPUNeighborLayout::FixedRow;
     graph.num_edges = cfg.num_edges;
     graph.total_neighbor_pairs = total_pairs;
-    graph.max_neighbor_degree = max_num_of_neighbors;
+    graph.max_num_of_neighbors = max_num_of_neighbors;
     graph.neighbor_slots_per_anchor = max_candidates;
     graph.dev_edges = index.dev_edges;
     graph.dev_neighbor_list = dev_neighbor_list;
@@ -804,7 +804,7 @@ bool build_neighbor_graph_fixed_row_warp(
     graph.layout = GPUNeighborLayout::FixedRow;
     graph.num_edges = cfg.num_edges;
     graph.total_neighbor_pairs = total_pairs;
-    graph.max_neighbor_degree = max_num_of_neighbors;
+    graph.max_num_of_neighbors = max_num_of_neighbors;
     graph.neighbor_slots_per_anchor = max_candidates;
     graph.dev_edges = index.dev_edges;
     graph.dev_neighbor_list = dev_neighbor_list;

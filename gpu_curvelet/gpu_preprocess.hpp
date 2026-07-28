@@ -67,9 +67,9 @@ struct GPUPreprocessConfig {
 struct GPUNeighborGraph {
     GPUNeighborLayout layout = GPUNeighborLayout::CSR;
 
-    int num_edges                = 0;   //> number of edges
-    int total_neighbor_pairs     = 0;   //> CSR: neighbor_offsets[num_edges]; sum of neighbor counts
-    unsigned max_neighbor_degree = 0;
+    int num_edges                 = 0;   //> number of edges
+    int total_neighbor_pairs      = 0;   //> CSR: neighbor_offsets[num_edges]; sum of neighbor counts
+    unsigned max_num_of_neighbors = 0;   //> max number of neighbors per anchor
 
     //> Global edge table on device (row-major: x, y, orientation, strength)
     float *dev_edges = nullptr;
