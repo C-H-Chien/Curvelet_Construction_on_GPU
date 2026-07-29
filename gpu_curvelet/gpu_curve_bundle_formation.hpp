@@ -2,22 +2,11 @@
 #define GPU_CURVELET_HPP
 
 #include "gpu_preprocess.hpp"
+#include "param_settings.hpp"
 
 #include <cmath>
 
 class CategoryProfiler;
-
-struct GPUCurveletConfig {
-    float dx = 0.4f;
-    float dt = 0.261799f;  // 15 deg
-    float sx = 0.1f;
-    float st = 0.08f;
-    float max_k = 0.3f;
-    float nrad = 3.5f;
-    int group_max_sz = 4;
-    int sz_edge_data = 4;
-    int bundle_warps_per_block = 4;
-};
 
 struct GPUCurveBundleStorage {
     int curves_num_in_bundle_pixel = 0;
@@ -32,12 +21,8 @@ struct GPUCurveBundleStorage {
     unsigned char *dev_hyp_look_edge = nullptr;
 };
 
-struct GPUCurveletFormationResult {
-    unsigned valid_pairs = 0;
-};
-
 //> Calculate the perturbation region size of edge location and orientation
-inline int gpu_curve_bundle_grid_size(float tolerance, float sample_step)
+inline int get_gpu_curve_bundle_grid_size(float tolerance, float sample_step)
 {
     return 2 * static_cast<int>(floorf(tolerance / sample_step + 0.5f)) + 1;
 }
@@ -46,14 +31,16 @@ bool gpu_allocate_curve_bundles(
     const GPUNeighborGraph &graph,
     GPUCurveBundleStorage &storage,
     unsigned **dev_valid_pair_count);
-void gpu_curvelet_free_bundles(GPUCurveBundleStorage &storage);
 
-//> Pairwise curve bundle formation on a fixed-row neighbor graph (one warp per anchor).
-bool gpu_form_pairwise_bundles(
-    const GPUCurveletConfig &cfg,
+
+//> Pairwise curve bundle formation on a fixed-row neighbor graph (one warp per anchor)
+bool gpu_form_pairwise_bundles_main(
+    const CurveletParams &params,
     const GPUNeighborGraph &graph,
     GPUCurveBundleStorage &storage,
-    GPUCurveletFormationResult &result,
+    unsigned &valid_pairs,
     CategoryProfiler *profiler = nullptr);
+
+void gpu_curvelet_free_bundles(GPUCurveBundleStorage &storage);
 
 #endif // GPU_CURVELET_HPP
