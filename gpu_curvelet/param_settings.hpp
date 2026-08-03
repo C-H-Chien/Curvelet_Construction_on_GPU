@@ -8,7 +8,6 @@
 
 struct CurveletParams {
     double nrad = 3.5;
-    double gap = 1.5;
     double dx = 0.4;
     double dt_deg = 15.0;
     double max_k = 0.3;
@@ -17,16 +16,28 @@ struct CurveletParams {
     unsigned out_type = 0;
     double sx = 0.1;
     double st = 0.08;
-    std::string edge_file = "TO_edges_ABC_0006_thresh1.txt";
+    std::string edge_file = "eth3d_cables2.txt";
     int edge_data_sz = 4;
     std::string csr_strategy = "two-pass";
+    std::string csr_discover_mode = "thread";
     std::string neighbor_layout = "fixed-row";
-    unsigned max_candidates = 64;
+    unsigned max_candidates = 32;
     int neighbor_count_threads = 1;
     int neighbor_fill_threads = 1;
     int neighbor_stage_threads = 1;
     int neighbor_warps_per_block = 1;
     std::string fixed_row_build = "warp";
+    int bundle_warps_per_block = 1; //> pairwise curve-bundle formation: warps/block
+    int chain_warps_per_block = 2; //> TODO: tune this parameter
+    //> Shared-memory cache for warp growth: auto | none | lane
+    //> auto  = prefer lane workspace in shared (may reduce warps/block)
+    //> none  = no shared cache (mode 0); keep requested warps/block
+    //> lane  = per-lane growth workspace in shared (mode 1); keep requested warps/block
+    std::string chain_smem_mode = "auto";
+    int dedup_threads_per_block = 128;
+
+    //> Angle tolerance in radians (kernels use radians; CLI stores degrees).
+    float dt_rad() const { return static_cast<float>(dt_deg * M_PI / 180.0); }
 };
 
 inline void print_usage(const char *prog)
@@ -48,9 +59,14 @@ inline void print_usage(const char *prog)
         << "  --sx <val>                 Position sampling step (default: 0.1)\n"
         << "  --st <val>                 Angle sampling step in radians (default: 0.08)\n"
         << "  --csr-strategy <mode>      CSR build: single-pass | two-pass (default: two-pass)\n"
+        << "  --csr-discover <mode>      CSR discover, using warp or thread per anchor edge: thread | warp (default: thread)\n"
         << "  --neighbor-layout <mode>   Neighbor storage: csr | fixed-row (default: fixed-row)\n"
         << "  --fixed-row-build <mode>   Fixed-row build: warp | stage (default: warp)\n"
-        << "  --neighbor-warps-per-block <N>  Fixed-row warp build: warps/block (default: 1)\n"
+        << "  --neighbor-warps-per-block <N>  Warp-per-anchor discover: warps/block (default: 1)\n"
+        << "  --bundle-warps-per-block <N>  Pairwise bundle formation: warps/block (default: 4)\n"
+        << "  --chain-warps-per-block <N>  Warp-per-anchor chain growth: warps/block (default: 4)\n"
+        << "  --chain-smem-mode <mode>   Warp shared cache: auto | none | lane (default: auto)\n"
+        << "  --dedup-threads-per-block <N>  Deduplication threads/block (default: 128)\n"
         << "  --max-candidates <N>       Max neighbors staged per anchor (default: 64)\n"
         << "  --neighbor-count-threads <N>  Two-pass count kernel threads/block (default: 1)\n"
         << "  --neighbor-fill-threads <N>   Two-pass fill kernel threads/block (default: 1)\n"
@@ -146,6 +162,9 @@ inline bool parse_args(int argc, char **argv, CurveletParams &params,
         else if (std::strcmp(arg, "--csr-strategy") == 0 && i + 1 < argc) {
             params.csr_strategy = argv[++i];
         }
+        else if (std::strcmp(arg, "--csr-discover") == 0 && i + 1 < argc) {
+            params.csr_discover_mode = argv[++i];
+        }
         else if (std::strcmp(arg, "--neighbor-layout") == 0 && i + 1 < argc) {
             params.neighbor_layout = argv[++i];
         }
@@ -154,6 +173,18 @@ inline bool parse_args(int argc, char **argv, CurveletParams &params,
         }
         else if (std::strcmp(arg, "--neighbor-warps-per-block") == 0 && i + 1 < argc) {
             if (!parse_int_arg(argv[++i], "--neighbor-warps-per-block", params.neighbor_warps_per_block)) return false;
+        }
+        else if (std::strcmp(arg, "--bundle-warps-per-block") == 0 && i + 1 < argc) {
+            if (!parse_int_arg(argv[++i], "--bundle-warps-per-block", params.bundle_warps_per_block)) return false;
+        }
+        else if (std::strcmp(arg, "--chain-warps-per-block") == 0 && i + 1 < argc) {
+            if (!parse_int_arg(argv[++i], "--chain-warps-per-block", params.chain_warps_per_block)) return false;
+        }
+        else if (std::strcmp(arg, "--chain-smem-mode") == 0 && i + 1 < argc) {
+            params.chain_smem_mode = argv[++i];
+        }
+        else if (std::strcmp(arg, "--dedup-threads-per-block") == 0 && i + 1 < argc) {
+            if (!parse_int_arg(argv[++i], "--dedup-threads-per-block", params.dedup_threads_per_block)) return false;
         }
         else if (std::strcmp(arg, "--max-candidates") == 0 && i + 1 < argc) {
             if (!parse_unsigned_arg(argv[++i], "--max-candidates", params.max_candidates)) return false;

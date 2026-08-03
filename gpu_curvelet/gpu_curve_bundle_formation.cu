@@ -1,6 +1,7 @@
 #include "gpu_curve_bundle_formation.hpp"
 #include "gpu_common.hpp"
 #include "timer.hpp"
+#include "indices.hpp"
 #include "device/gpu_curve_bundle_formation_kernels.cuh"
 
 #include <cmath>
@@ -16,21 +17,28 @@ void profile_lap(CategoryProfiler *profiler, TimerCategory cat, const char *deta
 }
 
 void launch_curve_bundle_formation_kernel(
-    const GPUCurveletConfig &cfg,
+    const CurveletParams &params,
     const GPUNeighborGraph &graph,
     const GPUCurveBundleStorage &storage,
     unsigned *dev_valid_pair_count)
 {
     //> Sanity check
-    const int warps_per_block = cfg.bundle_warps_per_block;
+    const int warps_per_block = params.bundle_warps_per_block;
     if (warps_per_block <= 0 || warps_per_block > 32) {
         fprintf(stderr, "launch_curve_bundle_formation_kernel: invalid bundle_warps_per_block=%d (use 1..32)\n", warps_per_block);
         return;
     }
 
+    //> Assign one warp per anchor edge. Each thread in the warp processes one anchor-neighbor pair to form a curve bundle hypothesis.
     const int threads_per_block = warps_per_block * 32;
     const int num_blocks = div_up(graph.num_edges, warps_per_block);
     const size_t shmem_bytes = static_cast<size_t>(warps_per_block) * 2 * sizeof(float);
+
+    const float dx = static_cast<float>(params.dx);
+    const float dt = params.dt_rad();
+    const float sx = static_cast<float>(params.sx);
+    const float st = static_cast<float>(params.st);
+    const float max_k = static_cast<float>(params.max_k);
 
     curve_bundle_formation_kernel<<<num_blocks, threads_per_block, shmem_bytes>>>(
         graph.num_edges,
@@ -39,8 +47,8 @@ void launch_curve_bundle_formation_kernel(
         storage.curves_num_in_bundle_pixel,
         storage.curves_num_in_bundle_theta,
         warps_per_block,
-        cfg.dx, cfg.dt, cfg.sx, cfg.st, cfg.max_k,
-        cfg.sz_edge_data,
+        dx, dt, sx, st, max_k,
+        params.edge_data_sz,
         graph.dev_edges,
         graph.dev_neighbor_list,
         graph.dev_neighbor_counts,
@@ -107,23 +115,34 @@ void gpu_curvelet_free_bundles(GPUCurveBundleStorage &storage)
     }
 }
 
-bool gpu_form_pairwise_bundles(
-    const GPUCurveletConfig &cfg,
+bool gpu_form_pairwise_bundles_main(
+    const CurveletParams &params,
     const GPUNeighborGraph &graph,
     GPUCurveBundleStorage &storage,
-    GPUCurveletFormationResult &result,
+    unsigned &valid_pairs,
     CategoryProfiler *profiler)
 {
+    //> Sanity check: the neighr graph must follow the fixed-row layout
     if (graph.layout != GPUNeighborLayout::FixedRow) {
-        fprintf(stderr, "gpu_form_pairwise_bundles: requires fixed-row neighbor layout\n");
+        fprintf(stderr, "gpu_form_pairwise_bundles_main: requires fixed-row neighbor layout\n");
         return false;
     }
 
-    storage.curves_num_in_bundle_pixel = gpu_curve_bundle_grid_size(cfg.dx, cfg.sx);
-    storage.curves_num_in_bundle_theta = gpu_curve_bundle_grid_size(cfg.dt, cfg.st);
+    const float dx = static_cast<float>(params.dx);
+    const float dt = params.dt_rad();
+    const float sx = static_cast<float>(params.sx);
+    const float st = static_cast<float>(params.st);
+
+    storage.curves_num_in_bundle_pixel = get_gpu_curve_bundle_grid_size(dx, sx);
+    storage.curves_num_in_bundle_theta = get_gpu_curve_bundle_grid_size(dt, st);
     storage.slots_per_anchor           = graph.neighbor_slots_per_anchor;
     storage.num_edges                  = graph.num_edges;
     storage.bundle_cells               = storage.curves_num_in_bundle_pixel * storage.curves_num_in_bundle_theta;
+#if VERBOSE
+    std::cout << "curves_num_in_bundle_pixel:                 " << storage.curves_num_in_bundle_pixel << std::endl;
+    std::cout << "curves_num_in_bundle_theta:                 " << storage.curves_num_in_bundle_theta << std::endl;
+    std::cout << "bundle_cells (multiply of pixel and theta): " << storage.bundle_cells << std::endl;
+#endif
 
     unsigned *dev_valid_pair_count = nullptr;
 
@@ -135,11 +154,12 @@ bool gpu_form_pairwise_bundles(
     profile_lap(profiler, TimerCategory::MemoryAlloc, first_bundle_alloc ? "curve bundle buffers and valid-pair counter" : "bundle valid-pair counter");
 
     //> Launch the curve bundle formation kernel
-    launch_curve_bundle_formation_kernel(cfg, graph, storage, dev_valid_pair_count);
+    launch_curve_bundle_formation_kernel(params, graph, storage, dev_valid_pair_count);
+    cudacheck(cudaDeviceSynchronize());
     profile_lap(profiler, TimerCategory::Kernel, "form_pairwise_bundles");
 
     //> Copy the valid-pair count from GPU to host
-    cudacheck(cudaMemcpy(&result.valid_pairs, dev_valid_pair_count, sizeof(unsigned), cudaMemcpyDeviceToHost));
+    cudacheck(cudaMemcpy(&valid_pairs, dev_valid_pair_count, sizeof(unsigned), cudaMemcpyDeviceToHost));
     profile_lap(profiler, TimerCategory::DataTransfer, "bundle valid-pair count D->H");
 
     //> Free the GPU memory

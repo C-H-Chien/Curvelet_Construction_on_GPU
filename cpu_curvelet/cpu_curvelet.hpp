@@ -15,6 +15,10 @@
 #include "curvelet_utils.hpp"
 #include "preprocess.hpp"
 
+struct CPUCurveletFormationResult {
+    unsigned valid_pairs = 0;
+};
+
 template<typename T>
 class CurveletCPU
 {
@@ -95,6 +99,7 @@ public:
     ~CurveletCPU();
 
     void curvelet_preprocessing(T* bundle_min_ks, T* bundle_max_ks, bool* hyp_LookEdge, unsigned* edge_chain_on_the_fly, unsigned* edge_chain_target);
+    bool form_pairwise_bundles(CPUCurveletFormationResult &result);
     void build_curvelets_greedy();
     void compact_curvelet_output();
     bool compute_curve_bundle( unsigned te_idx, unsigned le_idx, T* bundle_min_ks, T* bundle_max_ks, bool* hyp_LookEdg, 
@@ -298,6 +303,64 @@ void CurveletCPU<T>::compact_curvelet_output()
 }
 
 template<typename T>
+bool CurveletCPU<T>::form_pairwise_bundles(CPUCurveletFormationResult &result)
+{
+    omp_set_num_threads(omp_threads);
+    unsigned valid_pairs = 0;
+    const int bundle_cells = static_cast<int>(curves_num_in_bundle_pixel * curves_num_in_bundle_theta);
+    const size_t bundle_words = static_cast<size_t>(_max_num_look_edges) * static_cast<size_t>(bundle_cells);
+
+    #pragma omp parallel reduction(+:valid_pairs)
+    {
+        T *bundle_min_ks = new T[bundle_words];
+        T *bundle_max_ks = new T[bundle_words];
+        bool *hyp_LookEdge = new bool[_max_num_look_edges];
+
+        #pragma omp for schedule(dynamic)
+        for (int te_idx = 0; te_idx < _num_edges; te_idx++) {
+            const unsigned n_look = neighbor_count(static_cast<unsigned>(te_idx));
+
+            T te_id = 0;
+            T te_pt_x = 0;
+            T te_pt_y = 0;
+            T te_orient = 0;
+            T te_grad_mag = 0;
+            retrieve_edge_data(static_cast<unsigned>(te_idx), 0, te_id, te_pt_x, te_pt_y, te_orient, te_grad_mag);
+
+            for (int i = 0; i < _max_num_look_edges; i++) {
+                for (int j = 0; j < bundle_cells; j++) {
+                    bundle_min_ks(i, j) = -_max_k;
+                    bundle_max_ks(i, j) = _max_k;
+                }
+                hyp_LookEdge[i] = false;
+            }
+
+            for (unsigned le_idx = 0; le_idx < n_look; le_idx++) {
+                T le_id = 0;
+                T le_pt_x = 0;
+                T le_pt_y = 0;
+                T le_orient = 0;
+                T le_grad_mag = 0;
+                retrieve_edge_data(static_cast<unsigned>(te_idx), le_idx + 1, le_id, le_pt_x, le_pt_y, le_orient, le_grad_mag);
+
+                if (compute_curve_bundle(static_cast<unsigned>(te_idx), le_idx, bundle_min_ks, bundle_max_ks, hyp_LookEdge,
+                                         te_pt_x, te_pt_y, le_pt_x, le_pt_y, te_orient, le_orient)
+                    && hyp_LookEdge[le_idx]) {
+                    valid_pairs++;
+                }
+            }
+        }
+
+        delete[] bundle_min_ks;
+        delete[] bundle_max_ks;
+        delete[] hyp_LookEdge;
+    }
+
+    result.valid_pairs = valid_pairs;
+    return true;
+}
+
+template<typename T>
 void CurveletCPU<T>::build_curvelets_greedy( )
 {
     _num_curvelets = 0;
@@ -307,10 +370,13 @@ void CurveletCPU<T>::build_curvelets_greedy( )
 
     omp_set_num_threads(omp_threads);
     double start = omp_get_wtime();
+    //> Phase times: max over threads (≈ parallel wall time for that phase).
+    //> Do NOT sum thread-local intervals — that is CPU-seconds and does not show OpenMP speedup.
     double time_direction_filter = 0.0;
     double time_bundle_transport = 0.0;
     double time_chain_growth = 0.0;
     double time_dedup = 0.0;
+    int threads_used = 1;
     #pragma omp parallel
     {
         double local_direction_filter = 0.0;
@@ -368,7 +434,7 @@ void CurveletCPU<T>::build_curvelets_greedy( )
         //> initialize all local arrays of omp threads
         curvelet_preprocessing( bundle_min_ks, bundle_max_ks, hyp_LookEdge, edge_chain_on_the_fly, edge_chain_target);
 
-        #pragma omp for schedule(dynamic)
+        #pragma omp for schedule(dynamic) nowait
         for (unsigned te_idx = 0; te_idx < (unsigned)_num_edges; te_idx++) {
 
             const unsigned n_look = neighbor_count(te_idx);
@@ -477,12 +543,12 @@ void CurveletCPU<T>::build_curvelets_greedy( )
 
                     local_chain_growth += omp_get_wtime() - growth_t0;
 
+                    //> Phase 2-equivalent: exact-match dedup + accept/record (matches GPU dedup_record)
                     double dedup_t0 = omp_get_wtime();
                     bool accept_curvelet = false;
                     if (edge_chain_lidx > 2) {
                         accept_curvelet = !check_curvelet_exist(edge_chain_lidx, edge_chain_on_the_fly, edge_chain_target);
                     }
-                    local_dedup += omp_get_wtime() - dedup_t0;
 
                     if (accept_curvelet) {
                         
@@ -497,6 +563,7 @@ void CurveletCPU<T>::build_curvelets_greedy( )
                                               f_run == 0, te_pt_x, te_pt_y, te_orient,
                                               cmp_bundle_min_ks, cmp_bundle_max_ks);
                     }
+                    local_dedup += omp_get_wtime() - dedup_t0;
 
                     for (unsigned i = 0; i < _group_max_sz; i++) {
                         edge_chain_on_the_fly[i] = 0;
@@ -534,42 +601,35 @@ void CurveletCPU<T>::build_curvelets_greedy( )
         delete[] edge_chain_on_the_fly;
         delete[] edge_chain_target;
 
-        #pragma omp atomic
-        time_direction_filter += local_direction_filter;
-        #pragma omp atomic
-        time_bundle_transport += local_bundle_transport;
-        #pragma omp atomic
-        time_chain_growth += local_chain_growth;
-        #pragma omp atomic
-        time_dedup += local_dedup;
+        #pragma omp critical
+        {
+            if (local_direction_filter > time_direction_filter) time_direction_filter = local_direction_filter;
+            if (local_bundle_transport > time_bundle_transport) time_bundle_transport = local_bundle_transport;
+            if (local_chain_growth > time_chain_growth) time_chain_growth = local_chain_growth;
+            if (local_dedup > time_dedup) time_dedup = local_dedup;
+            threads_used = omp_get_num_threads();
+        }
     }
 
     compact_curvelet_output();
 
     double curvelet_build_time = omp_get_wtime() - start;
     const double time_pairwise = time_direction_filter + time_bundle_transport;
-    const double phase_cpu_total = time_pairwise + time_chain_growth + time_dedup;
-    if (omp_threads > 1)
-        std::cout<<"- Time of curvelet building (OpenMP, "<<omp_threads<<" threads): "<<curvelet_build_time*1000<<" (ms)"<<std::endl;
+    //> Denominator for %: wall-clock of the parallel region (phases are interleaved per thread)
+    const double phase_ref = (curvelet_build_time > 0.0) ? curvelet_build_time : 1.0;
+    if (threads_used > 1)
+        std::cout<<"- Time of curvelet building (OpenMP, "<<threads_used<<" threads): "<<curvelet_build_time*1000<<" (ms)"<<std::endl;
     else
         std::cout<<"- Time of curvelet building: "<<curvelet_build_time*1000<<" (ms)"<<std::endl;
-    if (phase_cpu_total > 0.0) {
-        std::cout<<"-   pairwise curve bundle formation: "<<time_pairwise*1000<<" (ms)"
-                 <<"  ["<<(100.0*time_pairwise/phase_cpu_total)<<"% of compute]"<<std::endl;
-        if (time_pairwise > 0.0) {
-            std::cout<<"-     direction filtering: "<<time_direction_filter*1000<<" (ms)" << "  ["<<(100.0*time_direction_filter/time_pairwise)<<"% of pairwise]"<<std::endl;
-            std::cout<<"-     bundle transport (compute_curve_bundle): "<<time_bundle_transport*1000<<" (ms)" <<"  ["<<(100.0*time_bundle_transport/time_pairwise)<<"% of pairwise]"<<std::endl;
-        }
-        std::cout<<"-   chain growth by bundle intersection: "<<time_chain_growth*1000<<" (ms)" << "  ["<<(100.0*time_chain_growth/phase_cpu_total)<<"% of compute]"<<std::endl;
-        std::cout<<"-   curvelet dedup (check_curvelet_exist): "<<time_dedup*1000<<" (ms)" << "  [" << (100.0*time_dedup/phase_cpu_total)<<"% of compute]"<<std::endl;
-    } 
-    else {
-        std::cout<<"-   pairwise curve bundle formation: 0 (ms)"<<std::endl;
-        std::cout<<"-     direction filtering: 0 (ms)"<<std::endl;
-        std::cout<<"-     bundle transport (compute_curve_bundle): 0 (ms)"<<std::endl;
-        std::cout<<"-   chain growth by bundle intersection: 0 (ms)"<<std::endl;
-        std::cout<<"-   curvelet dedup (check_curvelet_exist): 0 (ms)"<<std::endl;
+    std::cout<<"-   phase times below are max over threads (≈ parallel wall; not CPU-sec sum)"<<std::endl;
+    std::cout<<"-   pairwise curve bundle formation: "<<time_pairwise*1000<<" (ms)"
+             <<"  ["<<(100.0*time_pairwise/phase_ref)<<"% of wall]"<<std::endl;
+    if (time_pairwise > 0.0) {
+        std::cout<<"-     direction filtering: "<<time_direction_filter*1000<<" (ms)" << "  ["<<(100.0*time_direction_filter/time_pairwise)<<"% of pairwise]"<<std::endl;
+        std::cout<<"-     bundle transport (compute_curve_bundle): "<<time_bundle_transport*1000<<" (ms)" <<"  ["<<(100.0*time_bundle_transport/time_pairwise)<<"% of pairwise]"<<std::endl;
     }
+    std::cout<<"-   chain growth by bundle intersection (phase 1): "<<time_chain_growth*1000<<" (ms)" << "  ["<<(100.0*time_chain_growth/phase_ref)<<"% of wall]"<<std::endl;
+    std::cout<<"-   curvelet dedup + record (phase 2): "<<time_dedup*1000<<" (ms)" << "  [" << (100.0*time_dedup/phase_ref)<<"% of wall]"<<std::endl;
     std::cout<<"- Number of curvelets formed: "<<_num_curvelets<<std::endl;
 }
 

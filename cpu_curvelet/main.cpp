@@ -50,11 +50,19 @@ bool run_curvelet(const std::string &out_chain_file, int nthreads, const Curvele
     }
     timer.lap("build CSR neighbor graph");
 
-    //> Curve bundle formation: build curvelets using greedy algorithm
+    //> Curve bundle formation: pairwise transport (GPU-comparable benchmark)
     CurveletCPU<T> CurveletCPU_obj( edge_num, edge_data_sz, csr_graph, dx, dt, sx, st, max_k, group_max_sz, nthreads, TOED_edges.data(), nrad );
 
+    CPUCurveletFormationResult bundle_result;
+    if (!CurveletCPU_obj.form_pairwise_bundles(bundle_result)) {
+        return false;
+    }
+    timer.lap("form_pairwise_bundles");
+    std::cout << "Pairwise curve bundles formed: " << bundle_result.valid_pairs << " valid pairs" << std::endl;
+
+    //> Chain growth + dedup/record (internal printout splits phase 1 vs phase 2)
     CurveletCPU_obj.build_curvelets_greedy();
-    timer.lap("build_curvelets_greedy");
+    timer.lap("build_curvelets_greedy (pairwise+growth+dedup; see phase breakdown above)");
     timer.summary();
 
     const unsigned out_h = CurveletCPU_obj.num_curvelets();

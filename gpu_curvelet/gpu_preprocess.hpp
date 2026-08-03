@@ -28,6 +28,12 @@ enum class GPUNeighborCSRStrategy {
     TwoPass         //> count kernel + fill kernel (rediscover neighbors)
 };
 
+//> CSR neighbor discovery parallelism (thread-per-anchor vs warp-per-anchor).
+enum class GPUNeighborCSRDiscoverMode {
+    Thread,         //> one CUDA thread per anchor (default)
+    Warp            //> one warp per anchor; lanes scan 7x7 cells in parallel
+};
+
 //> How to build the fixed-row neighbor table.
 enum class GPUFixedRowBuildStrategy {
     Stage,  //> one thread/anchor discovers via discover_and_stage_neighbors_kernel
@@ -43,6 +49,7 @@ struct GPUPreprocessConfig {
     bool copy_to_host = false;
     GPUNeighborLayout neighbor_layout = GPUNeighborLayout::CSR;
     GPUNeighborCSRStrategy csr_strategy = GPUNeighborCSRStrategy::SinglePass;
+    GPUNeighborCSRDiscoverMode csr_discover_mode = GPUNeighborCSRDiscoverMode::Thread;
     //> Max neighbors staged per anchor (7x7 window, ~2 edges/pixel -> 98)
     unsigned max_candidates = 64;
     //> Two-pass count_neighbors_kernel: threads per block (each thread handles one anchor).
@@ -51,7 +58,7 @@ struct GPUPreprocessConfig {
     int neighbor_fill_threads = 1;
     //> Single-pass stage/compact kernels: threads per block (each thread handles one anchor).
     int neighbor_stage_threads = 1;
-    //> Fixed-row warp build: warps per block in discover_fixed_row_warp_kernel (each warp = one anchor).
+    //> CSR/fixed-row warp discover: warps per block (each warp = one anchor).
     int neighbor_warps_per_block = 1;
     GPUFixedRowBuildStrategy fixed_row_build = GPUFixedRowBuildStrategy::Warp;
 };
@@ -60,9 +67,9 @@ struct GPUPreprocessConfig {
 struct GPUNeighborGraph {
     GPUNeighborLayout layout = GPUNeighborLayout::CSR;
 
-    int num_edges                = 0;   //> number of edges
-    int total_neighbor_pairs     = 0;   //> CSR: neighbor_offsets[num_edges]; sum of neighbor counts
-    unsigned max_neighbor_degree = 0;
+    int num_edges                 = 0;   //> number of edges
+    int total_neighbor_pairs      = 0;   //> CSR: neighbor_offsets[num_edges]; sum of neighbor counts
+    unsigned max_num_of_neighbors = 0;   //> max number of neighbors per anchor
 
     //> Global edge table on device (row-major: x, y, orientation, strength)
     float *dev_edges = nullptr;

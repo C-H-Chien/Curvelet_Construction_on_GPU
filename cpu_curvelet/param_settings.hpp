@@ -18,7 +18,7 @@ struct CurveletParams {
     unsigned out_type = 0;
     double sx = 0.1;
     double st = 0.08;
-    std::string edge_file = "TO_edges_ABC_0006_thresh1.txt";
+    std::string edge_file = "eth3d_cables2.txt";
     int edge_data_sz = 4;
     unsigned max_candidates = 128;
 };
