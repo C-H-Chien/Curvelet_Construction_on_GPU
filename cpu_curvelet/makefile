@@ -12,10 +12,10 @@ OPENMP = -fopenmp
 curvelet: main.o   
 	g++ ${OPENMP} -o CURVELET main.o 
 
-main.o: main.cpp
+main.o: main.cpp param_settings.hpp cpu_curvelet.hpp preprocess.hpp timer.hpp data_io.hpp indices.hpp curvelet_utils.hpp
 	g++ ${OPENMP} -c main.cpp -O3 -std=c++17 -o main.o
 
 clean:
-	rm -f curvelet *.o
+	rm -f CURVELET curvelet *.o
 
 
