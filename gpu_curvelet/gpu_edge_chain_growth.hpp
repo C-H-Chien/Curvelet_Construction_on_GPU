@@ -8,6 +8,10 @@
 
 class CategoryProfiler;
 
+//> The number of information columns per curvelet (row-major)
+//> CH: Leave it as it is. No need to change it.
+inline constexpr int GPU_CURVELET_INFO_WIDTH = 10;
+
 struct GPUCurveletChainStorage {
     int num_edges = 0;
     int slots_per_anchor = 0;
@@ -33,12 +37,6 @@ struct GPUCurveletChainStorage {
     size_t scratch_uints_per_anchor = 0;
 };
 
-struct GPUCurveletChainResult {
-    unsigned num_curvelets = 0;
-};
-
-inline constexpr int GPU_CURVELET_INFO_WIDTH = 10;
-
 bool gpu_allocate_edge_chains(
     const GPUNeighborGraph &graph,
     const GPUCurveBundleStorage &bundles,
@@ -57,7 +55,7 @@ bool gpu_grow_edge_chains_main(
     const GPUNeighborGraph &graph,
     const GPUCurveBundleStorage &bundles,
     GPUCurveletChainStorage &storage,
-    GPUCurveletChainResult &result,
+    unsigned &num_curvelets,
     CategoryProfiler *profiler = nullptr);
 
 //> Compact per-anchor chain rows into a contiguous host buffer (1-based edge IDs, CPU-compatible).

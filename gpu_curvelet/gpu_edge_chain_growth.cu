@@ -340,11 +340,11 @@ bool gpu_grow_edge_chains_main(
     const GPUNeighborGraph &graph,
     const GPUCurveBundleStorage &bundles,
     GPUCurveletChainStorage &storage,
-    GPUCurveletChainResult &result,
+    unsigned &num_curvelets,
     CategoryProfiler *profiler)
 {
     //> Sanity check: the neighbor graph must follow the fixed-row layout
-    if (graph.layout != GPUNeighborLayout::FixedRow) {
+    if (graph.layout != "fixed-row") {
         fprintf(stderr, "gpu_grow_edge_chains_main: requires fixed-row neighbor layout\n");
         return false;
     }
@@ -374,11 +374,11 @@ bool gpu_grow_edge_chains_main(
     profile_lap(profiler, TimerCategory::DataTransfer, "anchor chain counts D->H");
 
     //> Compute the total number of curvelets
-    unsigned total = 0;
+    unsigned total_num_of_curvelets = 0;
     for (unsigned c : host_counts) {
-        total += c;
+        total_num_of_curvelets += c;
     }
-    result.num_curvelets = total;
+    num_curvelets = total_num_of_curvelets;
 
     return true;
 }

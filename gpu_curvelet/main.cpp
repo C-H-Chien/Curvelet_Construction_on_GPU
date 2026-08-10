@@ -18,53 +18,8 @@
 #include "gpu_common.hpp"
 #include "timer.hpp"
 
-static GPUNeighborCSRStrategy parse_csr_strategy(const std::string &mode)
-{
-    if (mode == "two-pass" || mode == "twopass") {
-        return GPUNeighborCSRStrategy::TwoPass;
-    }
-    return GPUNeighborCSRStrategy::SinglePass;
-}
-
-static GPUNeighborCSRDiscoverMode parse_csr_discover_mode(const std::string &mode)
-{
-    if (mode == "warp") {
-        return GPUNeighborCSRDiscoverMode::Warp;
-    }
-    if (mode != "thread") {
-        std::cerr << "Warning: unknown csr discover mode '" << mode
-                  << "', using thread (expected: thread | warp)\n";
-    }
-    return GPUNeighborCSRDiscoverMode::Thread;
-}
-
-static GPUFixedRowBuildStrategy parse_fixed_row_build(const std::string &mode)
-{
-    if (mode == "stage") {
-        return GPUFixedRowBuildStrategy::Stage;
-    }
-    if (mode != "warp") {
-        std::cerr << "Warning: unknown fixed-row build '" << mode
-                  << "', using warp (expected: warp | stage)\n";
-    }
-    return GPUFixedRowBuildStrategy::Warp;
-}
-
-static GPUNeighborLayout parse_neighbor_layout(const std::string &mode)
-{
-    if (mode == "fixed-row" || mode == "fixedrow" || mode == "look-list" || mode == "looklist") {
-        return GPUNeighborLayout::FixedRow;
-    }
-    if (mode != "csr") {
-        std::cerr << "Warning: unknown neighbor layout '" << mode
-                  << "', using csr (expected: csr | fixed-row)\n";
-    }
-    return GPUNeighborLayout::CSR;
-}
-
 bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, CurveletParams &params)
 {
-    const float nrad = static_cast<float>(params.nrad);
     const unsigned curvelet_style = params.curvelet_style;
     const unsigned out_type = params.out_type;
 
@@ -90,35 +45,19 @@ bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, CurveletPar
     cudaGetDeviceProperties(&prop, gpu_id);
     printf("Device name: %s (Compute capability: %d.%d)\n", prop.name, prop.major, prop.minor);
 
-    GPUPreprocessConfig pre_cfg;
-    pre_cfg.device_id = gpu_id;
-    pre_cfg.num_edges = edge_num;
-    pre_cfg.sz_edge_data = edge_data_sz;
-    pre_cfg.neighbor_radius = 3;
-    pre_cfg.rad = nrad;
-    pre_cfg.csr_strategy = parse_csr_strategy(params.csr_strategy);
-    pre_cfg.csr_discover_mode = parse_csr_discover_mode(params.csr_discover_mode);
-    pre_cfg.neighbor_layout = parse_neighbor_layout(params.neighbor_layout);
-    pre_cfg.max_candidates = params.max_candidates;
-    pre_cfg.neighbor_count_threads = params.neighbor_count_threads;
-    pre_cfg.neighbor_fill_threads = params.neighbor_fill_threads;
-    pre_cfg.neighbor_stage_threads = params.neighbor_stage_threads;
-    pre_cfg.neighbor_warps_per_block = params.neighbor_warps_per_block;
-    pre_cfg.fixed_row_build = parse_fixed_row_build(params.fixed_row_build);
-
     CategoryProfiler profiler;
     profiler.set_title("preprocess");
     profiler.start();
-    GPUPreprocessResult pre_result;
-    if (!gpu_preprocess_build(pre_cfg, TOED_edges.data(), pre_result, &profiler)) {
+    GPUNeighborGraph neighbor_graph;
+    if (!gpu_preprocess_build(params, gpu_id, edge_num, TOED_edges.data(), neighbor_graph, &profiler)) {
         return false;
     }
     profiler.summary();
 
-    if (pre_result.csr.layout == GPUNeighborLayout::FixedRow) {
-        std::cout << "Fixed-row layout ready: " << pre_result.csr.total_neighbor_pairs
-                  << " anchor-neighbor pairs, " << pre_result.csr.neighbor_slots_per_anchor
-                  << " slots/anchor, max number of neighbors = " << pre_result.csr.max_num_of_neighbors
+    if (neighbor_graph.layout == "fixed-row") {
+        std::cout << "Fixed-row layout ready: " << neighbor_graph.total_neighbor_pairs
+                  << " anchor-neighbor pairs, " << neighbor_graph.neighbor_slots_per_anchor
+                  << " slots/anchor, max number of neighbors = " << neighbor_graph.max_num_of_neighbors
                   << std::endl;
 
         CategoryProfiler bundle_profiler;
@@ -128,9 +67,9 @@ bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, CurveletPar
         //> ================== Pairwise Curve Bundle Formation ==================
         GPUCurveBundleStorage bundle_storage;
         unsigned valid_pairs = 0;
-        if (!gpu_form_pairwise_bundles_main(params, pre_result.csr, bundle_storage, valid_pairs, &bundle_profiler)) {
+        if (!gpu_form_pairwise_bundles_main(params, neighbor_graph, bundle_storage, valid_pairs, &bundle_profiler)) {
             gpu_curvelet_free_bundles(bundle_storage);
-            gpu_preprocess_free(pre_result);
+            gpu_preprocess_free(neighbor_graph);
             return false;
         }
         bundle_profiler.summary();
@@ -142,23 +81,22 @@ bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, CurveletPar
         chain_profiler.start();
 
         GPUCurveletChainStorage chain_storage;
-        GPUCurveletChainResult chain_result;
-        if (!gpu_grow_edge_chains_main(params, pre_result.csr, bundle_storage, chain_storage, chain_result, &chain_profiler)) {
+        unsigned num_curvelets = 0;
+        if (!gpu_grow_edge_chains_main(params, neighbor_graph, bundle_storage, chain_storage, num_curvelets, &chain_profiler)) {
             gpu_curvelet_free_chains(chain_storage);
             gpu_curvelet_free_bundles(bundle_storage);
-            gpu_preprocess_free(pre_result);
+            gpu_preprocess_free(neighbor_graph);
             return false;
         }
         chain_profiler.summary();
-        std::cout << "Edge chains grown: " << chain_result.num_curvelets << " curvelets" << std::endl;
+        std::cout << "Edge chains grown: " << num_curvelets << " curvelets" << std::endl;
 
         std::vector<int> host_chains;
         std::vector<float> host_info;
-        unsigned num_curvelets = 0;
         if (!gpu_download_compact_chains(chain_storage, host_chains, host_info, num_curvelets)) {
             gpu_curvelet_free_chains(chain_storage);
             gpu_curvelet_free_bundles(bundle_storage);
-            gpu_preprocess_free(pre_result);
+            gpu_preprocess_free(neighbor_graph);
             return false;
         }
 
@@ -175,13 +113,13 @@ bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, CurveletPar
         gpu_curvelet_free_bundles(bundle_storage);
     }
     else {
-        std::cout << "CSR layout ready: " << pre_result.csr.total_neighbor_pairs
+        std::cout << "CSR layout ready: " << neighbor_graph.total_neighbor_pairs
                   << " anchor-neighbor pairs, max number of neighbor edges per anchor = "
-                  << pre_result.csr.max_num_of_neighbors << std::endl;
+                  << neighbor_graph.max_num_of_neighbors << std::endl;
         std::cout << "GPU curve bundle formation requires --neighbor-layout fixed-row." << std::endl;
     }
 
-    gpu_preprocess_free(pre_result);
+    gpu_preprocess_free(neighbor_graph);
 
     (void)curvelet_style;
     (void)out_type;

@@ -1,12 +1,14 @@
 #ifndef PARAM_SETTINGS_HPP
 #define PARAM_SETTINGS_HPP
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
 
 struct CurveletParams {
+    //> Parameters for the curvelet construction algorithm
     double nrad = 3.5;
     double dx = 0.4;
     double dt_deg = 15.0;
@@ -16,8 +18,8 @@ struct CurveletParams {
     unsigned out_type = 0;
     double sx = 0.1;
     double st = 0.08;
-    std::string edge_file = "eth3d_cables2.txt";
-    int edge_data_sz = 4;
+    
+    //> Parameters for the neighbor graph construction
     std::string csr_strategy = "two-pass";
     std::string csr_discover_mode = "thread";
     std::string neighbor_layout = "fixed-row";
@@ -36,8 +38,18 @@ struct CurveletParams {
     std::string chain_smem_mode = "auto";
     int dedup_threads_per_block = 128;
 
+    //> Input edge file
+    std::string edge_file = "eth3d_cables2.txt";
+    int edge_data_sz = 4;
+
     //> Angle tolerance in radians (kernels use radians; CLI stores degrees).
     float dt_rad() const { return static_cast<float>(dt_deg * M_PI / 180.0); }
+
+    //> Integer cell-search radius: floor(nrad). Window side = 2 * neighbor_radius() - 1.
+    unsigned get_neighbor_radius() const
+    {
+        return static_cast<unsigned>(std::floor(nrad));
+    }
 };
 
 inline void print_usage(const char *prog)
