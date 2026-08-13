@@ -6,6 +6,9 @@ LIB=-lcudart
 NVCCFLAGS  = -O3 -Xcompiler "-fPIC -Wall -Wno-unused-function -Wno-strict-aliasing" -std=c++17
 NVCCFLAGS += -gencode arch=compute_70,code=sm_70
 NVCCFLAGS += -gencode arch=compute_80,code=sm_80
+#> L40S / Ada; also emit PTX for forward compatibility on newer GPUs
+NVCCFLAGS += -gencode arch=compute_89,code=sm_89
+NVCCFLAGS += -gencode arch=compute_89,code=compute_89
 
 CXXFLAGS = -O3 -std=c++17 -I.
 

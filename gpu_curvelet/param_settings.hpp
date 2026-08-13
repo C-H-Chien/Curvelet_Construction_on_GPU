@@ -29,7 +29,11 @@ struct CurveletParams {
     int neighbor_stage_threads = 1;
     int neighbor_warps_per_block = 1;
     std::string fixed_row_build = "warp";
-    int bundle_warps_per_block = 1; //> pairwise curve-bundle formation: warps/block
+
+    //> Parameters for the pairwise curve bundle formation
+    int bundle_warps_per_block = 1;
+
+    //> Parameters for the edge chain growth
     int chain_warps_per_block = 2; //> TODO: tune this parameter
     //> Shared-memory cache for warp growth: auto | none | lane
     //> auto  = prefer lane workspace in shared (may reduce warps/block)
@@ -60,7 +64,7 @@ inline void print_usage(const char *prog)
         << "Options:\n"
         << "  --output <file>            Output chain file (default: chain_gpu.txt)\n"
         << "  --device <N>               CUDA device id (default: 0)\n"
-        << "  --edge-file <file>         Input edge file in test_files\n"
+        << "  --edge-file <file>         Input edge file\n"
         << "  --nrad <val>               Neighbor search radius (default: 3.5)\n"
         << "  --dx <val>                 Edge position tolerance in pixels (default: 0.4)\n"
         << "  --dt-deg <val>             Edge angle tolerance in degrees (default: 15)\n"
@@ -84,6 +88,8 @@ inline void print_usage(const char *prog)
         << "  --neighbor-fill-threads <N>   Two-pass fill kernel threads/block (default: 1)\n"
         << "  --neighbor-stage-threads <N>  Single-pass stage/compact threads/block (default: 1)\n"
         << "  --edge-data-sz <N>         Values per edge in input file (default: 4)\n"
+        << "  --timing-csv <file>        Append one summary timing row per run (CSV)\n"
+        << "  --timing-detail-csv <file> Append per-step timing rows per run (CSV)\n"
         << "  --help                     Show this help message\n";
 }
 
@@ -125,6 +131,7 @@ inline bool parse_double_arg(const char *arg, const char *name, double &value)
 
 inline bool parse_args(int argc, char **argv, CurveletParams &params,
                        std::string &out_file, int &gpu_id,
+                       std::string &timing_csv, std::string &timing_detail_csv,
                        bool &show_help)
 {
     show_help = false;
@@ -137,6 +144,12 @@ inline bool parse_args(int argc, char **argv, CurveletParams &params,
         }
         else if (std::strcmp(arg, "--output") == 0 && i + 1 < argc) {
             out_file = argv[++i];
+        }
+        else if (std::strcmp(arg, "--timing-csv") == 0 && i + 1 < argc) {
+            timing_csv = argv[++i];
+        }
+        else if (std::strcmp(arg, "--timing-detail-csv") == 0 && i + 1 < argc) {
+            timing_detail_csv = argv[++i];
         }
         else if (std::strcmp(arg, "--device") == 0 && i + 1 < argc) {
             if (!parse_int_arg(argv[++i], "--device", gpu_id)) return false;

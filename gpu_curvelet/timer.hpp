@@ -3,10 +3,12 @@
 
 #include <chrono>
 #include <cstring>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 
 //> High-level timing buckets for GPU / host pipeline stages.
@@ -31,13 +33,62 @@ inline const char *timer_category_label(TimerCategory cat)
     }
 }
 
+inline std::string csv_escape(const std::string &s)
+{
+    bool need_quotes = false;
+    for (char c : s) {
+        if (c == ',' || c == '"' || c == '\n' || c == '\r') {
+            need_quotes = true;
+            break;
+        }
+    }
+    if (!need_quotes) {
+        return s;
+    }
+    std::string out;
+    out.reserve(s.size() + 2);
+    out.push_back('"');
+    for (char c : s) {
+        if (c == '"') {
+            out.push_back('"');
+        }
+        out.push_back(c);
+    }
+    out.push_back('"');
+    return out;
+}
+
+inline std::string csv_format_seconds(double sec)
+{
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(9) << sec;
+    return oss.str();
+}
+
+inline bool file_is_nonempty(const std::string &path)
+{
+    struct stat st {};
+    if (stat(path.c_str(), &st) != 0) {
+        return false;
+    }
+    return st.st_size > 0;
+}
+
 //> Accumulates lap timings from multiple functions into shared category totals.
 class CategoryProfiler {
 public:
+    struct DetailRecord {
+        TimerCategory category;
+        std::string detail;
+        double seconds;
+    };
+
     void set_title(const char *title)
     {
         _title = (title != nullptr) ? title : "";
     }
+
+    const std::string &title() const { return _title; }
 
     void start()
     {
@@ -67,7 +118,7 @@ public:
         _category_totals[static_cast<size_t>(cat)] += seconds;
         if (detail != nullptr && detail[0] != '\0') {
             _details.push_back({cat, detail, seconds});
-            print_step(cat, detail, seconds);
+            // print_step(cat, detail, seconds);
         }
     }
 
@@ -81,12 +132,12 @@ public:
         return _category_totals[static_cast<size_t>(cat)];
     }
 
+    const std::vector<DetailRecord> &details() const { return _details; }
+
     void summary() const
     {
         const double total = elapsed();
-        const std::string heading = _title.empty()
-            ? "timing by category"
-            : (_title + " timing by category");
+        const std::string heading = _title.empty() ? ("timing by category") : (_title + " timing by category");
 
         std::cout << "\n========== " << heading << " ==========\n";
         for (size_t i = 0; i < static_cast<size_t>(TimerCategory::Count); ++i) {
@@ -102,7 +153,7 @@ public:
         }
         std::cout << "  " << std::left << std::setw(40) << "total"
                   << std::right << std::setw(12) << format(total) << "\n";
-        std::cout << "========================================\n";
+        std::cout << "==================================================\n";
 
         if (!_details.empty()) {
             const std::string detail_heading = _title.empty()
@@ -120,14 +171,33 @@ public:
         }
     }
 
+    //> Append one row per detail lap to a long-form CSV (creates header if file is new/empty).
+    bool append_detail_csv(const std::string &path, const std::string &run_id) const
+    {
+        if (path.empty()) {
+            return true;
+        }
+        const bool write_header = !file_is_nonempty(path);
+        std::ofstream out(path, std::ios::app);
+        if (!out) {
+            std::cerr << "Error: could not open timing detail CSV: " << path << std::endl;
+            return false;
+        }
+        if (write_header) {
+            out << "run_id,stage,category,detail,seconds\n";
+        }
+        for (const auto &r : _details) {
+            out << csv_escape(run_id) << ','
+                << csv_escape(_title) << ','
+                << csv_escape(timer_category_label(r.category)) << ','
+                << csv_escape(r.detail) << ','
+                << csv_format_seconds(r.seconds) << '\n';
+        }
+        return static_cast<bool>(out);
+    }
+
 private:
     using Clock = std::chrono::steady_clock;
-
-    struct DetailRecord {
-        TimerCategory category;
-        const char *detail;
-        double seconds;
-    };
 
     static std::string format(double sec)
     {
@@ -195,7 +265,7 @@ public:
         const auto now = Clock::now();
         const double sec = std::chrono::duration<double>(now - _last).count();
         _records.push_back({step, sec});
-        print_step(step, sec);
+        // print_step(step, sec);
         _last = now;
         return sec;
     }

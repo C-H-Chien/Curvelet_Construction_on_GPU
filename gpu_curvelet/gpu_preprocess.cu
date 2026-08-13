@@ -226,8 +226,9 @@ void launch_discover_fixed_row_warp_kernel(
         * sizeof(NeighborCandidate)
         + static_cast<size_t>(warps_per_block) * sizeof(int);
 
-    printf("[fixed-row warp] warps/block=%d, threads/block=%d, shmem=%.2f KB\n",
-           warps_per_block, threads_per_block, static_cast<double>(shmem_bytes) / 1024.0);
+#if VERBOSE
+    // printf("[fixed-row warp] warps/block=%d, threads/block=%d, shmem=%.2f KB\n", warps_per_block, threads_per_block, static_cast<double>(shmem_bytes) / 1024.0);
+#endif
 
     discover_fixed_row_warp_kernel<<<num_blocks, threads_per_block, shmem_bytes>>>(
         num_edges, max_candidates, max_candidates, warps_per_block,
@@ -726,7 +727,9 @@ bool build_neighbor_graph_fixed_row_warp(
     cudaFree(dev_truncated_anchors);
     profile_lap(profiler, TimerCategory::Other, "fixed-row warp temp buffer free");
 
-    print_fixed_row_graph_stats("[fixed-row warp] ", params, num_edges, total_pairs, max_num_of_neighbors, max_candidates);
+#if VERBOSE
+    // print_fixed_row_graph_stats("[fixed-row warp] ", params, num_edges, total_pairs, max_num_of_neighbors, max_candidates);
+#endif
     return true;
 }
 
