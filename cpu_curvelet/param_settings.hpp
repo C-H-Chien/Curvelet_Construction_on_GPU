@@ -44,6 +44,8 @@ inline void print_usage(const char *prog)
         << "  --st <val>                 Angle sampling step in radians (default: 0.08)\n"
         << "  --edge-data-sz <N>         Values per edge in input file (default: 4)\n"
         << "  --max-candidates <N>       Max neighbors per anchor in CSR build (default: 128)\n"
+        << "  --timing-csv <file>        Append one summary timing row per run (CSV)\n"
+        << "  --timing-detail-csv <file> Append per-step timing rows per run (CSV)\n"
         << "  --help                     Show this help message\n";
 }
 
@@ -85,6 +87,7 @@ inline bool parse_double_arg(const char *arg, const char *name, double &value)
 
 inline bool parse_args(int argc, char **argv, CurveletParams &params,
                        bool &use_double, std::string &out_file, int &nthreads,
+                       std::string &timing_csv, std::string &timing_detail_csv,
                        bool &show_help)
 {
     show_help = false;
@@ -105,6 +108,12 @@ inline bool parse_args(int argc, char **argv, CurveletParams &params,
         }
         else if (std::strcmp(arg, "--output") == 0 && i + 1 < argc) {
             out_file = argv[++i];
+        }
+        else if (std::strcmp(arg, "--timing-csv") == 0 && i + 1 < argc) {
+            timing_csv = argv[++i];
+        }
+        else if (std::strcmp(arg, "--timing-detail-csv") == 0 && i + 1 < argc) {
+            timing_detail_csv = argv[++i];
         }
         else if (std::strcmp(arg, "--nthreads") == 0 && i + 1 < argc) {
             nthreads = std::atoi(argv[++i]);

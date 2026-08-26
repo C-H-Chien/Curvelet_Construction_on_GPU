@@ -10,7 +10,7 @@
 
 inline std::string edge_input_path(const std::string &filename)
 {
-    return "../test_files/" + filename;
+    return filename;
 }
 
 inline bool is_blank_line(const std::string &line)
