@@ -165,12 +165,12 @@ fill_curvelet_info_row(
 
 //> Initialize a seed: direction/hyp filters, write anchor into chain, copy seed pairwise bundle into working.
 //> Returns false if this seed is inactive for f_run.
+//> anchor_bundle_min/max are slot-major bases (index = slot * bundle_cells), either global or shared.
 __device__ __forceinline__ bool
 grow_seed_init(
     int f_run,
     int seed_idx,
     int row_base,
-    size_t anchor_bundle_base,
     int bundle_cells,
     int sz_edge_data,
     float anchor_edge_x,
@@ -180,8 +180,8 @@ grow_seed_init(
     unsigned anchor_id,
     const float *dev_edges,
     const int *dev_neighbor_list,
-    const float *dev_bundle_min_ks,
-    const float *dev_bundle_max_ks,
+    const float *anchor_bundle_min,
+    const float *anchor_bundle_max,
     const unsigned char *dev_is_bundle_geometrically_valid,
     float *work_min_ks,
     float *work_max_ks,
@@ -210,8 +210,8 @@ grow_seed_init(
     *out_len = 1;
 
     //> Initialize working bundle from the seed pairwise curve bundle
-    const float *seed_min = dev_bundle_min_ks + anchor_bundle_base + static_cast<size_t>(seed_idx) * static_cast<size_t>(bundle_cells);
-    const float *seed_max = dev_bundle_max_ks + anchor_bundle_base + static_cast<size_t>(seed_idx) * static_cast<size_t>(bundle_cells);
+    const float *seed_min = anchor_bundle_min + static_cast<size_t>(seed_idx) * static_cast<size_t>(bundle_cells);
+    const float *seed_max = anchor_bundle_max + static_cast<size_t>(seed_idx) * static_cast<size_t>(bundle_cells);
     copy_bundle(bundle_cells, work_min_ks, work_max_ks, seed_min, seed_max);
     return true;
 }
@@ -282,7 +282,6 @@ grow_seed_chain(
     int seed_idx,
     int num_of_neighbors,
     int row_base,
-    size_t anchor_bundle_base,
     int bundle_cells,
     int group_max_sz,
     int sz_edge_data,
@@ -293,8 +292,8 @@ grow_seed_chain(
     unsigned anchor_id,
     const float *dev_edges,
     const int *dev_neighbor_list,
-    const float *dev_bundle_min_ks,
-    const float *dev_bundle_max_ks,
+    const float *anchor_bundle_min,
+    const float *anchor_bundle_max,
     const unsigned char *dev_is_bundle_geometrically_valid,
     float *work_min_ks,
     float *work_max_ks,
@@ -302,10 +301,10 @@ grow_seed_chain(
     int *out_len)
 {
     if (!grow_seed_init(
-            f_run, seed_idx, row_base, anchor_bundle_base, bundle_cells, sz_edge_data,
+            f_run, seed_idx, row_base, bundle_cells, sz_edge_data,
             anchor_edge_x, anchor_edge_y, anchor_cos, anchor_sin, anchor_id,
             dev_edges, dev_neighbor_list,
-            dev_bundle_min_ks, dev_bundle_max_ks, dev_is_bundle_geometrically_valid,
+            anchor_bundle_min, anchor_bundle_max, dev_is_bundle_geometrically_valid,
             work_min_ks, work_max_ks,
             out_chain, out_len)) {
         return;
@@ -313,9 +312,9 @@ grow_seed_chain(
 
     //> Neighbors are already in ascending distance to the anchor
     for (int neighbor_remain_idx = 0; neighbor_remain_idx < num_of_neighbors; neighbor_remain_idx++) {
-        const float *cand_min = dev_bundle_min_ks + anchor_bundle_base +
+        const float *cand_min = anchor_bundle_min +
             static_cast<size_t>(neighbor_remain_idx) * static_cast<size_t>(bundle_cells);
-        const float *cand_max = dev_bundle_max_ks + anchor_bundle_base +
+        const float *cand_max = anchor_bundle_max +
             static_cast<size_t>(neighbor_remain_idx) * static_cast<size_t>(bundle_cells);
 
         if (grow_seed_consider_neighbor(

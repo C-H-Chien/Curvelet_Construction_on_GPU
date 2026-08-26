@@ -203,8 +203,8 @@ bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, CurveletPar
     const int edge_data_sz = params.edge_data_sz;
 
     if (params.chain_smem_mode != "auto" && params.chain_smem_mode != "none" &&
-        params.chain_smem_mode != "lane") {
-        std::cerr << "Warning: unknown --chain-smem-mode '" << params.chain_smem_mode << "', using auto (expected: auto/none/lane)\n";
+        params.chain_smem_mode != "lane" && params.chain_smem_mode != "bundles") {
+        std::cerr << "Warning: unknown --chain-smem-mode '" << params.chain_smem_mode << "', using auto (expected: auto/none/lane/bundles)\n";
         params.chain_smem_mode = "auto";
     }
 

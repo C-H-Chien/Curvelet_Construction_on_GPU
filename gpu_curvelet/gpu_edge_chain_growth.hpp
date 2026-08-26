@@ -22,7 +22,8 @@ struct GPUCurveletChainStorage {
     int bundle_cells = 0;
 
     //> Warp growth shared-memory plan (set at allocate / launch time)
-    int warp_smem_mode = 0;          // 0=none, 1=lane workspace in shared
+    //> 0=none, 1=lane workspace in shared, 2=lane workspace + pairwise bundles in shared
+    int warp_smem_mode = 0;
     int warp_warps_per_block = 0;    // equals request unless --chain-smem-mode auto reduces it
     size_t warp_smem_bytes = 0;
 
