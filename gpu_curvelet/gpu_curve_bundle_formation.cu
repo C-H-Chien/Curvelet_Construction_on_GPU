@@ -123,7 +123,7 @@ bool gpu_form_pairwise_bundles_main(
     CategoryProfiler *profiler)
 {
     //> Sanity check: the neighr graph must follow the fixed-row layout
-    if (graph.layout != GPUNeighborLayout::FixedRow) {
+    if (graph.layout != "fixed-row") {
         fprintf(stderr, "gpu_form_pairwise_bundles_main: requires fixed-row neighbor layout\n");
         return false;
     }

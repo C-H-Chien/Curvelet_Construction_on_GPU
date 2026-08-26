@@ -9,9 +9,11 @@
 //> Shared-memory cache modes for warp growth (host selects based on size limits).
 //> 0 = none (global bundles + global lane workspaces)
 //> 1 = lane workspaces in shared; pairwise bundles stay in global
+//> 2 = lane workspaces + per-anchor pairwise bundles in shared
 enum : int {
     kWarpSmemNone = 0,
-    kWarpSmemLaneWs = 1
+    kWarpSmemLaneWs = 1,
+    kWarpSmemLaneWsAndBundles = 2
 };
 
 //> One warp per anchor: Phase 1
@@ -19,7 +21,9 @@ enum : int {
 //> writing into separate per-direction candidate / working-bundle buffers.
 //>
 //> Dynamic shared memory (per warp in the block), when enabled:
-//>   [32 lanes × 2*bundle_cells growth workspace] // mode 1 (working min+max)
+//>   mode 1: [32 lanes × 2*bundle_cells growth workspace]
+//>   mode 2: [32 lanes × 2*bundle_cells growth workspace]
+//>           [slots × bundle_cells min][slots × bundle_cells max]
 //>
 //> Float scratch per anchor (global; durable across phase 1→2):
 //>   [2 × slots × bundle_cells seed working min]   // f_run = 0,1
@@ -70,9 +74,17 @@ __global__ void grow_edge_chains_warp_kernel(
     const float anchor_sin = sinf(anchor_orient);
 
     const size_t lane_workspace_floats = static_cast<size_t>(2) * static_cast<size_t>(bundle_cells);
-    const bool lane_ws_in_smem = (smem_mode == kWarpSmemLaneWs);
-    const size_t floats_per_warp = lane_ws_in_smem ? (static_cast<size_t>(32) * lane_workspace_floats)
-        : 0;
+    const size_t bundle_grid_floats = static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(bundle_cells);
+    const bool lane_ws_in_smem = (smem_mode == kWarpSmemLaneWs || smem_mode == kWarpSmemLaneWsAndBundles);
+    const bool bundles_in_smem = (smem_mode == kWarpSmemLaneWsAndBundles);
+
+    size_t floats_per_warp = 0;
+    if (smem_mode == kWarpSmemLaneWs) {
+        floats_per_warp = static_cast<size_t>(32) * lane_workspace_floats;
+    } 
+    else if (smem_mode == kWarpSmemLaneWsAndBundles) {
+        floats_per_warp = (bundle_grid_floats * 2) + (static_cast<size_t>(32) * lane_workspace_floats);
+    }
     float *warp_smem = (floats_per_warp > 0) ? (smem + static_cast<size_t>(warp_id) * floats_per_warp) : nullptr;
 
     //> candidate_chains[f_run]: slots * chain_width; length at column group_max_sz
@@ -83,20 +95,44 @@ __global__ void grow_edge_chains_warp_kernel(
     float *seed_working_min = dev_scratch_f + static_cast<size_t>(anchor_id) * scratch_floats_per_anchor;
     float *seed_working_max = seed_working_min + static_cast<size_t>(2) * static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(bundle_cells);
 
+    //> Pairwise bundles for this anchor: shared cache or global base
+    const float *anchor_bundle_min = nullptr;
+    const float *anchor_bundle_max = nullptr;
     float *lane_ws_base = nullptr;
-    if (lane_ws_in_smem) {
-        lane_ws_base = warp_smem;
+
+    if (bundles_in_smem) {
+        float *smem_bundle_min = warp_smem;
+        float *smem_bundle_max = smem_bundle_min + bundle_grid_floats;
+        lane_ws_base = smem_bundle_max + bundle_grid_floats;
+
+        //> Cooperative load of this anchor's pairwise min/max grids into shared memory
+        const size_t n_cells = static_cast<size_t>(num_of_neighbors) * static_cast<size_t>(bundle_cells);
+        for (size_t i = static_cast<size_t>(lane); i < n_cells; i += 32) {
+            smem_bundle_min[i] = dev_bundle_min_ks[anchor_bundle_base + i];
+            smem_bundle_max[i] = dev_bundle_max_ks[anchor_bundle_base + i];
+        }
+        __syncwarp();
+
+        anchor_bundle_min = smem_bundle_min;
+        anchor_bundle_max = smem_bundle_max;
     } 
     else {
-        //> Fallback: lane workspaces live after seed-working grids in global scratch
-        lane_ws_base = seed_working_max + static_cast<size_t>(2) * static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(bundle_cells);
+        anchor_bundle_min = dev_bundle_min_ks + anchor_bundle_base;
+        anchor_bundle_max = dev_bundle_max_ks + anchor_bundle_base;
+        if (lane_ws_in_smem) {
+            lane_ws_base = warp_smem;
+        } 
+        else {
+            //> Fallback: lane workspaces live after seed-working grids in global scratch
+            lane_ws_base = seed_working_max + static_cast<size_t>(2) * static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(bundle_cells);
+        }
     }
 
     //> if shared memory is used, the following pointers are pointing to the shared memory workspace
     float *lane_ws = lane_ws_base + static_cast<size_t>(lane) * lane_workspace_floats;
     float *work_min_ks = lane_ws;
     float *work_max_ks = lane_ws + bundle_cells;
-    
+
     //> f_run = 0: forward growth
     //> f_run = 1: backward growth
     // #pragma unroll 2
@@ -123,19 +159,20 @@ __global__ void grow_edge_chains_warp_kernel(
             //> Grow directly into cand_row[0...group_max_sz).
             int chain_len = 0;
             grow_seed_chain(
-                f_run, seed_idx, num_of_neighbors, row_base, anchor_bundle_base,
+                f_run, seed_idx, num_of_neighbors, row_base,
                 bundle_cells, group_max_sz, sz_edge_data,
                 anchor_edge_x, anchor_edge_y, anchor_cos, anchor_sin,
                 static_cast<unsigned>(anchor_id),
                 dev_edges, dev_neighbor_list,
-                dev_bundle_min_ks, dev_bundle_max_ks, dev_is_bundle_geometrically_valid,
+                anchor_bundle_min, anchor_bundle_max, dev_is_bundle_geometrically_valid,
                 work_min_ks, work_max_ks,
                 cand_row, &chain_len);
 
             //> The curvelet length is stored at cand_row[group_max_sz]
             cand_row[group_max_sz] = static_cast<unsigned>(chain_len);
 
-            if (chain_len > 0) {
+            //> Phase 2 only needs working grids for chains that pass the length gate
+            if (chain_len > 2) {
                 for (int b = 0; b < bundle_cells; b++) {
                     out_min[b] = work_min_ks[b];
                     out_max[b] = work_max_ks[b];
@@ -213,12 +250,11 @@ __global__ void dedup_record_edge_chains_kernel(
 
         //> Walks seeds in order
         for (int seed_idx = 0; seed_idx < num_of_neighbors; seed_idx++) {
-            
             //> Get the candidate chain for the current seed
             unsigned *cand_row = candidate_chains_frun + static_cast<size_t>(seed_idx) * static_cast<size_t>(chain_width);
-            const int chain_len = static_cast<int>(cand_row[group_max_sz]);
 
             //> Skip the chain if the length is less than 2
+            const int chain_len = static_cast<int>(cand_row[group_max_sz]);
             if (chain_len <= 2) {
                 continue;
             }

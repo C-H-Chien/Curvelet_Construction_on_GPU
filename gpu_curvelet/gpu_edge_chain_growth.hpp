@@ -8,6 +8,10 @@
 
 class CategoryProfiler;
 
+//> The number of information columns per curvelet (row-major)
+//> CH: Leave it as it is. No need to change it.
+inline constexpr int GPU_CURVELET_INFO_WIDTH = 10;
+
 struct GPUCurveletChainStorage {
     int num_edges = 0;
     int slots_per_anchor = 0;
@@ -18,7 +22,8 @@ struct GPUCurveletChainStorage {
     int bundle_cells = 0;
 
     //> Warp growth shared-memory plan (set at allocate / launch time)
-    int warp_smem_mode = 0;          // 0=none, 1=lane workspace in shared
+    //> 0=none, 1=lane workspace in shared, 2=lane workspace + pairwise bundles in shared
+    int warp_smem_mode = 0;
     int warp_warps_per_block = 0;    // equals request unless --chain-smem-mode auto reduces it
     size_t warp_smem_bytes = 0;
 
@@ -32,12 +37,6 @@ struct GPUCurveletChainStorage {
     size_t scratch_floats_per_anchor = 0;
     size_t scratch_uints_per_anchor = 0;
 };
-
-struct GPUCurveletChainResult {
-    unsigned num_curvelets = 0;
-};
-
-inline constexpr int GPU_CURVELET_INFO_WIDTH = 10;
 
 bool gpu_allocate_edge_chains(
     const GPUNeighborGraph &graph,
@@ -57,7 +56,7 @@ bool gpu_grow_edge_chains_main(
     const GPUNeighborGraph &graph,
     const GPUCurveBundleStorage &bundles,
     GPUCurveletChainStorage &storage,
-    GPUCurveletChainResult &result,
+    unsigned &num_curvelets,
     CategoryProfiler *profiler = nullptr);
 
 //> Compact per-anchor chain rows into a contiguous host buffer (1-based edge IDs, CPU-compatible).

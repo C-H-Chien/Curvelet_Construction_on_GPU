@@ -1,12 +1,14 @@
 #ifndef PARAM_SETTINGS_HPP
 #define PARAM_SETTINGS_HPP
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
 
 struct CurveletParams {
+    //> Parameters for the curvelet construction algorithm
     double nrad = 3.5;
     double dx = 0.4;
     double dt_deg = 15.0;
@@ -16,8 +18,8 @@ struct CurveletParams {
     unsigned out_type = 0;
     double sx = 0.1;
     double st = 0.08;
-    std::string edge_file = "eth3d_cables2.txt";
-    int edge_data_sz = 4;
+    
+    //> Parameters for the neighbor graph construction
     std::string csr_strategy = "two-pass";
     std::string csr_discover_mode = "thread";
     std::string neighbor_layout = "fixed-row";
@@ -27,17 +29,32 @@ struct CurveletParams {
     int neighbor_stage_threads = 1;
     int neighbor_warps_per_block = 1;
     std::string fixed_row_build = "warp";
-    int bundle_warps_per_block = 1; //> pairwise curve-bundle formation: warps/block
+
+    //> Parameters for the pairwise curve bundle formation
+    int bundle_warps_per_block = 1;
+
+    //> Parameters for the edge chain growth
     int chain_warps_per_block = 2; //> TODO: tune this parameter
-    //> Shared-memory cache for warp growth: auto | none | lane
-    //> auto  = prefer lane workspace in shared (may reduce warps/block)
-    //> none  = no shared cache (mode 0); keep requested warps/block
-    //> lane  = per-lane growth workspace in shared (mode 1); keep requested warps/block
+    //> Shared-memory cache for warp growth: auto | none | lane | bundles
+    //> auto    = prefer lane+bundles, then lane-only (may reduce warps/block)
+    //> none    = no shared cache (mode 0); keep requested warps/block
+    //> lane    = per-lane growth workspace in shared (mode 1); keep requested warps/block
+    //> bundles = lane workspace + pairwise bundles in shared (mode 2); keep requested warps/block
     std::string chain_smem_mode = "auto";
     int dedup_threads_per_block = 128;
 
+    //> Input edge file
+    std::string edge_file = "eth3d_cables2.txt";
+    int edge_data_sz = 4;
+
     //> Angle tolerance in radians (kernels use radians; CLI stores degrees).
     float dt_rad() const { return static_cast<float>(dt_deg * M_PI / 180.0); }
+
+    //> Integer cell-search radius: floor(nrad). Window side = 2 * neighbor_radius() - 1.
+    unsigned get_neighbor_radius() const
+    {
+        return static_cast<unsigned>(std::floor(nrad));
+    }
 };
 
 inline void print_usage(const char *prog)
@@ -48,7 +65,7 @@ inline void print_usage(const char *prog)
         << "Options:\n"
         << "  --output <file>            Output chain file (default: chain_gpu.txt)\n"
         << "  --device <N>               CUDA device id (default: 0)\n"
-        << "  --edge-file <file>         Input edge file in test_files\n"
+        << "  --edge-file <file>         Input edge file\n"
         << "  --nrad <val>               Neighbor search radius (default: 3.5)\n"
         << "  --dx <val>                 Edge position tolerance in pixels (default: 0.4)\n"
         << "  --dt-deg <val>             Edge angle tolerance in degrees (default: 15)\n"
@@ -64,14 +81,16 @@ inline void print_usage(const char *prog)
         << "  --fixed-row-build <mode>   Fixed-row build: warp | stage (default: warp)\n"
         << "  --neighbor-warps-per-block <N>  Warp-per-anchor discover: warps/block (default: 1)\n"
         << "  --bundle-warps-per-block <N>  Pairwise bundle formation: warps/block (default: 4)\n"
-        << "  --chain-warps-per-block <N>  Warp-per-anchor chain growth: warps/block (default: 4)\n"
-        << "  --chain-smem-mode <mode>   Warp shared cache: auto | none | lane (default: auto)\n"
+        << "  --chain-warps-per-block <N>  Warp-per-anchor chain growth: warps/block (default: 2)\n"
+        << "  --chain-smem-mode <mode>   Warp shared cache: auto | none | lane | bundles (default: auto)\n"
         << "  --dedup-threads-per-block <N>  Deduplication threads/block (default: 128)\n"
         << "  --max-candidates <N>       Max neighbors staged per anchor (default: 64)\n"
         << "  --neighbor-count-threads <N>  Two-pass count kernel threads/block (default: 1)\n"
         << "  --neighbor-fill-threads <N>   Two-pass fill kernel threads/block (default: 1)\n"
         << "  --neighbor-stage-threads <N>  Single-pass stage/compact threads/block (default: 1)\n"
         << "  --edge-data-sz <N>         Values per edge in input file (default: 4)\n"
+        << "  --timing-csv <file>        Append one summary timing row per run (CSV)\n"
+        << "  --timing-detail-csv <file> Append per-step timing rows per run (CSV)\n"
         << "  --help                     Show this help message\n";
 }
 
@@ -113,6 +132,7 @@ inline bool parse_double_arg(const char *arg, const char *name, double &value)
 
 inline bool parse_args(int argc, char **argv, CurveletParams &params,
                        std::string &out_file, int &gpu_id,
+                       std::string &timing_csv, std::string &timing_detail_csv,
                        bool &show_help)
 {
     show_help = false;
@@ -125,6 +145,12 @@ inline bool parse_args(int argc, char **argv, CurveletParams &params,
         }
         else if (std::strcmp(arg, "--output") == 0 && i + 1 < argc) {
             out_file = argv[++i];
+        }
+        else if (std::strcmp(arg, "--timing-csv") == 0 && i + 1 < argc) {
+            timing_csv = argv[++i];
+        }
+        else if (std::strcmp(arg, "--timing-detail-csv") == 0 && i + 1 < argc) {
+            timing_detail_csv = argv[++i];
         }
         else if (std::strcmp(arg, "--device") == 0 && i + 1 < argc) {
             if (!parse_int_arg(argv[++i], "--device", gpu_id)) return false;

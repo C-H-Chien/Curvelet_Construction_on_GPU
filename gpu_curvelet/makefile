@@ -6,6 +6,9 @@ LIB=-lcudart
 NVCCFLAGS  = -O3 -Xcompiler "-fPIC -Wall -Wno-unused-function -Wno-strict-aliasing" -std=c++17
 NVCCFLAGS += -gencode arch=compute_70,code=sm_70
 NVCCFLAGS += -gencode arch=compute_80,code=sm_80
+#> L40S / Ada; also emit PTX for forward compatibility on newer GPUs
+NVCCFLAGS += -gencode arch=compute_89,code=sm_89
+NVCCFLAGS += -gencode arch=compute_89,code=compute_89
 
 CXXFLAGS = -O3 -std=c++17 -I.
 
@@ -24,7 +27,7 @@ gpu_edge_chain_growth.o: gpu_edge_chain_growth.cu gpu_edge_chain_growth.hpp gpu_
 		gpu_dev_utils.cuh
 	nvcc ${INC} ${NVCCFLAGS} -c gpu_edge_chain_growth.cu -o gpu_edge_chain_growth.o
 
-gpu_preprocess.o: gpu_preprocess.cu gpu_preprocess.hpp gpu_common.hpp \
+gpu_preprocess.o: gpu_preprocess.cu gpu_preprocess.hpp param_settings.hpp gpu_common.hpp \
 		device/gpu_dev_common.cuh device/gpu_dev_neighbors.cuh device/gpu_preprocess_kernels.cuh
 	nvcc ${INC} ${NVCCFLAGS} -c gpu_preprocess.cu -o gpu_preprocess.o
 

@@ -18,10 +18,15 @@ void profile_lap(CategoryProfiler *profiler, TimerCategory cat, const char *deta
     }
 }
 
-size_t warp_smem_floats_per_warp(int smem_mode, int bundle_cells)
+size_t warp_smem_floats_per_warp(int smem_mode, int bundle_cells, int slots_per_anchor)
 {
+    const size_t lane_ws = static_cast<size_t>(32) * static_cast<size_t>(2) * static_cast<size_t>(bundle_cells);
     if (smem_mode == kWarpSmemLaneWs) {
-        return static_cast<size_t>(32) * static_cast<size_t>(2) * static_cast<size_t>(bundle_cells);
+        return lane_ws;
+    }
+    if (smem_mode == kWarpSmemLaneWsAndBundles) {
+        const size_t bundles = static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(2) * static_cast<size_t>(bundle_cells);
+        return bundles + lane_ws;
     }
     return 0;
 }
@@ -44,14 +49,16 @@ bool query_max_dynamic_shared_bytes(size_t &max_dyn_bytes)
     return true;
 }
 
-//> Optionally cache per-lane growth workspaces in shared memory (pairwise bundles stay in global).
+//> Optionally cache per-lane growth workspaces and/or pairwise bundles in shared memory.
 //>
 //> chain_smem_mode:
-//>   "auto" — prefer lane workspace in shared; may reduce warps_per_block
-//>   "none" — mode 0; keep requested warps_per_block
-//>   "lane" — mode 1; keep requested warps_per_block (fail if too large)
+//>   "auto"    — prefer lane+bundles, then lane-only; may reduce warps/block
+//>   "none"    — mode 0; keep requested warps/block
+//>   "lane"    — mode 1; keep requested warps/block (fail if too large)
+//>   "bundles" — mode 2; keep requested warps/block (fail if too large)
 bool choose_warp_smem_config(
     int bundle_cells,
+    int slots_per_anchor,
     int requested_warps_per_block,
     const std::string &chain_smem_mode,
     int &smem_mode,
@@ -65,6 +72,11 @@ bool choose_warp_smem_config(
     if (requested_warps_per_block <= 0 || requested_warps_per_block > 32) {
         fprintf(stderr, "choose_warp_smem_config: invalid warps_per_block=%d (use 1..32)\n",
                 requested_warps_per_block);
+        return false;
+    }
+    if (slots_per_anchor <= 0 || bundle_cells <= 0) {
+        fprintf(stderr, "choose_warp_smem_config: invalid slots=%d bundle_cells=%d\n",
+                slots_per_anchor, bundle_cells);
         return false;
     }
 
@@ -85,7 +97,7 @@ bool choose_warp_smem_config(
     cudacheck(cudaFuncSetAttribute( grow_edge_chains_warp_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(max_dyn_bytes)));
 
     auto try_mode = [&](int mode, int warps) -> bool {
-        const size_t per_warp = warp_smem_floats_per_warp(mode, bundle_cells);
+        const size_t per_warp = warp_smem_floats_per_warp(mode, bundle_cells, slots_per_anchor);
         const size_t bytes = per_warp * static_cast<size_t>(warps) * sizeof(float);
         if (per_warp == 0 || bytes > max_dyn_bytes) {
             return false;
@@ -97,12 +109,12 @@ bool choose_warp_smem_config(
     };
 
     auto fail_manual = [&](int mode) -> bool {
-        const size_t per_warp = warp_smem_floats_per_warp(mode, bundle_cells);
+        const size_t per_warp = warp_smem_floats_per_warp(mode, bundle_cells, slots_per_anchor);
         const size_t need = per_warp * static_cast<size_t>(requested_warps_per_block) * sizeof(float);
         fprintf(stderr,
                 "choose_warp_smem_config: --chain-smem-mode=%s needs %zu bytes "
                 "(%d warps/block) but device max dynamic shared is %zu bytes; "
-                "lower --chain-warps-per-block or use --chain-smem-mode none\n",
+                "lower --chain-warps-per-block or use --chain-smem-mode none/lane\n",
                 chain_smem_mode.c_str(), need, requested_warps_per_block, max_dyn_bytes);
         return false;
     };
@@ -114,7 +126,25 @@ bool choose_warp_smem_config(
         return fail_manual(kWarpSmemLaneWs);
     }
 
-    //> auto: lane workspace in shared, else global (may reduce warps)
+    if (chain_smem_mode == "bundles") {
+        if (try_mode(kWarpSmemLaneWsAndBundles, requested_warps_per_block)) {
+            return true;
+        }
+        return fail_manual(kWarpSmemLaneWsAndBundles);
+    }
+
+    //> auto: prefer lane+bundles, else lane-only (may reduce warps), else global
+    if (try_mode(kWarpSmemLaneWsAndBundles, requested_warps_per_block)) {
+        return true;
+    }
+    for (int w = requested_warps_per_block - 1; w >= 1; --w) {
+        if (try_mode(kWarpSmemLaneWsAndBundles, w)) {
+            fprintf(stderr,
+                    "grow_edge_chains_warp: lane+bundles shared cache; reduced warps_per_block %d -> %d\n",
+                    requested_warps_per_block, w);
+            return true;
+        }
+    }
     if (try_mode(kWarpSmemLaneWs, requested_warps_per_block)) {
         return true;
     }
@@ -127,7 +157,7 @@ bool choose_warp_smem_config(
         }
     }
     fprintf(stderr,
-            "grow_edge_chains_warp: shared memory too small; using global scratch for lane workspace\n");
+            "grow_edge_chains_warp: shared memory too small; using global scratch for lane workspace and bundles\n");
     smem_mode = kWarpSmemNone;
     warps_per_block = requested_warps_per_block;
     smem_bytes = 0;
@@ -253,7 +283,7 @@ bool gpu_allocate_edge_chains(
 
     //> Choose the warp-based shared memory configuration
     const int req_warps = (chain_warps_per_block > 0) ? chain_warps_per_block : 4;
-    if (!choose_warp_smem_config(storage.bundle_cells, req_warps,
+    if (!choose_warp_smem_config(storage.bundle_cells, storage.slots_per_anchor, req_warps,
                                  chain_smem_mode,
                                  storage.warp_smem_mode, storage.warp_warps_per_block,
                                  storage.warp_smem_bytes)) {
@@ -340,11 +370,11 @@ bool gpu_grow_edge_chains_main(
     const GPUNeighborGraph &graph,
     const GPUCurveBundleStorage &bundles,
     GPUCurveletChainStorage &storage,
-    GPUCurveletChainResult &result,
+    unsigned &num_curvelets,
     CategoryProfiler *profiler)
 {
     //> Sanity check: the neighbor graph must follow the fixed-row layout
-    if (graph.layout != GPUNeighborLayout::FixedRow) {
+    if (graph.layout != "fixed-row") {
         fprintf(stderr, "gpu_grow_edge_chains_main: requires fixed-row neighbor layout\n");
         return false;
     }
@@ -374,11 +404,11 @@ bool gpu_grow_edge_chains_main(
     profile_lap(profiler, TimerCategory::DataTransfer, "anchor chain counts D->H");
 
     //> Compute the total number of curvelets
-    unsigned total = 0;
+    unsigned total_num_of_curvelets = 0;
     for (unsigned c : host_counts) {
-        total += c;
+        total_num_of_curvelets += c;
     }
-    result.num_curvelets = total;
+    num_curvelets = total_num_of_curvelets;
 
     return true;
 }

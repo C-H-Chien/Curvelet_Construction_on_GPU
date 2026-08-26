@@ -12,7 +12,7 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <vector>
+#include <iostream>
 
 namespace {
 
@@ -35,44 +35,44 @@ inline void profile_lap(CategoryProfiler *profiler, TimerCategory cat, const cha
 }
 
 bool build_spatial_index(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     const float *host_to_edges,
     SpatialIndexHost &index,
     CategoryProfiler *profiler)
 {
     const int threads_per_block = 256;
 
-    cudacheck(cudaMalloc(&index.dev_edges, static_cast<size_t>(cfg.num_edges) * cfg.sz_edge_data * sizeof(float)));
-    cudacheck(cudaMalloc(&index.dev_cell_keys, static_cast<size_t>(cfg.num_edges) * sizeof(long long)));
-    cudacheck(cudaMalloc(&index.dev_edge_order, static_cast<size_t>(cfg.num_edges) * sizeof(int)));
-    cudacheck(cudaMalloc(&index.dev_unique_cells, static_cast<size_t>(cfg.num_edges) * sizeof(long long)));
-    cudacheck(cudaMalloc(&index.dev_cell_counts, static_cast<size_t>(cfg.num_edges) * sizeof(int)));
-    cudacheck(cudaMalloc(&index.dev_cell_starts, static_cast<size_t>(cfg.num_edges) * sizeof(int)));
-    cudacheck(cudaMalloc(&index.dev_sorted_edge_ids, static_cast<size_t>(cfg.num_edges) * sizeof(int)));
+    cudacheck(cudaMalloc(&index.dev_edges, static_cast<size_t>(num_edges) * params.edge_data_sz * sizeof(float)));
+    cudacheck(cudaMalloc(&index.dev_cell_keys, static_cast<size_t>(num_edges) * sizeof(long long)));
+    cudacheck(cudaMalloc(&index.dev_edge_order, static_cast<size_t>(num_edges) * sizeof(int)));
+    cudacheck(cudaMalloc(&index.dev_unique_cells, static_cast<size_t>(num_edges) * sizeof(long long)));
+    cudacheck(cudaMalloc(&index.dev_cell_counts, static_cast<size_t>(num_edges) * sizeof(int)));
+    cudacheck(cudaMalloc(&index.dev_cell_starts, static_cast<size_t>(num_edges) * sizeof(int)));
+    cudacheck(cudaMalloc(&index.dev_sorted_edge_ids, static_cast<size_t>(num_edges) * sizeof(int)));
     profile_lap(profiler, TimerCategory::MemoryAlloc, "spatial index buffers");
 
     cudacheck(cudaMemcpy(
         index.dev_edges, host_to_edges,
-        static_cast<size_t>(cfg.num_edges) * cfg.sz_edge_data * sizeof(float),
+        static_cast<size_t>(num_edges) * params.edge_data_sz * sizeof(float),
         cudaMemcpyHostToDevice));
     profile_lap(profiler, TimerCategory::DataTransfer, "edges H->D");
 
-    compute_cell_keys_kernel<<<div_up(cfg.num_edges, threads_per_block), threads_per_block>>>(
-        cfg.num_edges, index.dev_edges, index.dev_cell_keys);
+    compute_cell_keys_kernel<<<div_up(num_edges, threads_per_block), threads_per_block>>>(
+        num_edges, index.dev_edges, index.dev_cell_keys);
     cudacheck(cudaGetLastError());
     cudacheck(cudaDeviceSynchronize());
     profile_lap(profiler, TimerCategory::Kernel, "compute_cell_keys_kernel");
 
     thrust::device_ptr<long long> d_keys(index.dev_cell_keys);
     thrust::device_ptr<int> d_order(index.dev_edge_order);
-    thrust::sequence(d_order, d_order + cfg.num_edges);
-    thrust::sort_by_key(d_keys, d_keys + cfg.num_edges, d_order);
+    thrust::sequence(d_order, d_order + num_edges);
+    thrust::sort_by_key(d_keys, d_keys + num_edges, d_order);
 
     thrust::device_ptr<long long> d_unique(index.dev_unique_cells);
     thrust::device_ptr<int> d_counts(index.dev_cell_counts);
     thrust::device_ptr<int> d_starts(index.dev_cell_starts);
 
-    const auto ends = thrust::reduce_by_key( d_keys, d_keys + cfg.num_edges, thrust::make_constant_iterator(1), d_unique, d_counts );
+    const auto ends = thrust::reduce_by_key( d_keys, d_keys + num_edges, thrust::make_constant_iterator(1), d_unique, d_counts );
     index.num_cells = static_cast<int>(ends.first - d_unique);
 
     thrust::exclusive_scan(d_counts, d_counts + index.num_cells, d_starts);
@@ -80,7 +80,7 @@ bool build_spatial_index(
 
     cudacheck(cudaMemcpy(
         index.dev_sorted_edge_ids, index.dev_edge_order,
-        static_cast<size_t>(cfg.num_edges) * sizeof(int),
+        static_cast<size_t>(num_edges) * sizeof(int),
         cudaMemcpyDeviceToDevice));
     profile_lap(profiler, TimerCategory::DataTransfer, "sorted edge ids D->D");
 
@@ -129,45 +129,22 @@ int finalize_neighbor_offsets(int num_edges, int *dev_neighbor_counts, int *dev_
     return total_pairs;
 }
 
-void copy_csr_graph_to_host(
-    const GPUPreprocessConfig &cfg,
-    const SpatialIndexHost &index,
-    int total_pairs,
-    int *dev_neighbor_offsets,
-    int *dev_neighbor_ids,
-    float *dev_neighbor_dist2,
-    GPUNeighborGraph &graph)
-{
-    graph.host_edges = new float[static_cast<size_t>(cfg.num_edges) * cfg.sz_edge_data];
-    graph.host_neighbor_offsets = new int[static_cast<size_t>(cfg.num_edges + 1)];
-    if (total_pairs > 0) {
-        graph.host_neighbor_ids = new int[static_cast<size_t>(total_pairs)];
-        graph.host_neighbor_dist2 = new float[static_cast<size_t>(total_pairs)];
-    }
-
-    cudacheck(cudaMemcpy(graph.host_edges,            index.dev_edges,      static_cast<size_t>(cfg.num_edges) * cfg.sz_edge_data * sizeof(float), cudaMemcpyDeviceToHost));
-    cudacheck(cudaMemcpy(graph.host_neighbor_offsets, dev_neighbor_offsets, static_cast<size_t>(cfg.num_edges + 1) * sizeof(int),                  cudaMemcpyDeviceToHost));
-    if (total_pairs > 0) {
-        cudacheck(cudaMemcpy( graph.host_neighbor_ids,   dev_neighbor_ids,   static_cast<size_t>(total_pairs) * sizeof(int),   cudaMemcpyDeviceToHost));
-        cudacheck(cudaMemcpy( graph.host_neighbor_dist2, dev_neighbor_dist2, static_cast<size_t>(total_pairs) * sizeof(float), cudaMemcpyDeviceToHost));
-    }
-}
 
 void print_csr_graph_stats(
     const char *label,
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     int total_pairs,
     unsigned max_num_of_neighbors)
 {
-    printf("%sCSR neighbor graph: %d anchors, %d total pairs, max number of neighbor edges %u\n", label, cfg.num_edges, total_pairs, max_num_of_neighbors);
+    printf("%sCSR neighbor graph: %d anchors, %d total pairs, max number of neighbor edges %u\n", label, num_edges, total_pairs, max_num_of_neighbors);
     printf("%sCSR memory (device): edges %.2f MB + offsets %.2f KB + ids %.2f MB + dist2 %.2f MB = %.2f MB\n",
            label,
-           static_cast<double>(cfg.num_edges) * cfg.sz_edge_data * sizeof(float) / (1024.0 * 1024.0),
-           static_cast<double>(cfg.num_edges + 1) * sizeof(int) / 1024.0,
+           static_cast<double>(num_edges) * params.edge_data_sz * sizeof(float) / (1024.0 * 1024.0),
+           static_cast<double>(num_edges + 1) * sizeof(int) / 1024.0,
            static_cast<double>(total_pairs) * sizeof(int) / (1024.0 * 1024.0),
            static_cast<double>(total_pairs) * sizeof(float) / (1024.0 * 1024.0),
-           (static_cast<double>(cfg.num_edges) * cfg.sz_edge_data * sizeof(float)
-            + static_cast<double>(cfg.num_edges + 1) * sizeof(int)
+           (static_cast<double>(num_edges) * params.edge_data_sz * sizeof(float)
+            + static_cast<double>(num_edges + 1) * sizeof(int)
             + static_cast<double>(total_pairs) * sizeof(int)
             + static_cast<double>(total_pairs) * sizeof(float)) / (1024.0 * 1024.0));
 }
@@ -175,7 +152,7 @@ void print_csr_graph_stats(
 //> =============================== Kernel Launchers for the Two Pass CSR Strategy ===============================
 //> Count the number of neighbors per anchor edge (used by the two pass CSR strategy)
 void launch_neighbor_count_kernel(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     const SpatialIndexDevice &spatial,
     float rad_sqr,
     int *dev_neighbor_counts,
@@ -187,15 +164,15 @@ void launch_neighbor_count_kernel(
         return;
     }
 
-    const int num_blocks = div_up(cfg.num_edges, threads_per_block);
+    const int num_blocks = div_up(num_edges, threads_per_block);
 
-    count_neighbors_kernel<<<num_blocks, threads_per_block>>>( cfg.num_edges, spatial, rad_sqr, cfg.neighbor_radius, dev_neighbor_counts, dev_max_num_of_neighbors );
+    count_neighbors_kernel<<<num_blocks, threads_per_block>>>( num_edges, spatial, rad_sqr, params.get_neighbor_radius(), dev_neighbor_counts, dev_max_num_of_neighbors );
     cudacheck(cudaGetLastError());
 }
 
 //> Fill the CSR neighbor graph (used by the two pass CSR strategy)
 void launch_fill_csr_neighbors_kernel(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     const SpatialIndexDevice &spatial,
     float rad_sqr,
     const int *dev_neighbor_counts,
@@ -210,7 +187,7 @@ void launch_fill_csr_neighbors_kernel(
         return;
     }
 
-    const int num_blocks = div_up(cfg.num_edges, threads_per_block);
+    const int num_blocks = div_up(num_edges, threads_per_block);
     const size_t shmem_bytes = static_cast<size_t>(threads_per_block)
         * static_cast<size_t>(max_num_of_neighbors) * sizeof(NeighborCandidate);
 
@@ -218,14 +195,14 @@ void launch_fill_csr_neighbors_kernel(
            threads_per_block, max_num_of_neighbors, static_cast<double>(shmem_bytes) / 1024.0);
 
     fill_csr_neighbors_fixed_kernel<<<num_blocks, threads_per_block, shmem_bytes>>>(
-        cfg.num_edges, max_num_of_neighbors, spatial, rad_sqr, cfg.neighbor_radius,
+        num_edges, max_num_of_neighbors, spatial, rad_sqr, params.get_neighbor_radius(),
         dev_neighbor_counts, dev_neighbor_offsets, dev_neighbor_ids, dev_neighbor_dist2);
     cudacheck(cudaGetLastError());
 }
 //> ========================================================================================================================
 
 void launch_discover_fixed_row_warp_kernel(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     const SpatialIndexDevice &spatial,
     float rad_sqr,
     int max_candidates,
@@ -235,7 +212,7 @@ void launch_discover_fixed_row_warp_kernel(
     unsigned *dev_max_num_of_neighbors,
     unsigned *dev_truncated_anchors)
 {
-    const int warps_per_block = cfg.neighbor_warps_per_block;
+    const int warps_per_block = params.neighbor_warps_per_block;
     if (warps_per_block <= 0 || warps_per_block > 32) {
         fprintf(stderr,
                 "launch_discover_fixed_row_warp_kernel: invalid neighbor_warps_per_block=%d (use 1..32)\n",
@@ -244,24 +221,25 @@ void launch_discover_fixed_row_warp_kernel(
     }
 
     const int threads_per_block = warps_per_block * 32;
-    const int num_blocks = div_up(cfg.num_edges, warps_per_block);
+    const int num_blocks = div_up(num_edges, warps_per_block);
     const size_t shmem_bytes = static_cast<size_t>(warps_per_block) * static_cast<size_t>(max_candidates)
         * sizeof(NeighborCandidate)
         + static_cast<size_t>(warps_per_block) * sizeof(int);
 
-    printf("[fixed-row warp] warps/block=%d, threads/block=%d, shmem=%.2f KB\n",
-           warps_per_block, threads_per_block, static_cast<double>(shmem_bytes) / 1024.0);
+#if VERBOSE
+    // printf("[fixed-row warp] warps/block=%d, threads/block=%d, shmem=%.2f KB\n", warps_per_block, threads_per_block, static_cast<double>(shmem_bytes) / 1024.0);
+#endif
 
     discover_fixed_row_warp_kernel<<<num_blocks, threads_per_block, shmem_bytes>>>(
-        cfg.num_edges, max_candidates, max_candidates, warps_per_block,
-        spatial, rad_sqr, cfg.neighbor_radius,
+        num_edges, max_candidates, max_candidates, warps_per_block,
+        spatial, rad_sqr, params.get_neighbor_radius(),
         dev_neighbor_counts, dev_neighbor_list, dev_neighbor_dist2_row,
         dev_max_num_of_neighbors, dev_truncated_anchors);
     cudacheck(cudaGetLastError());
 }
 
 void launch_discover_and_stage_neighbors_kernel(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     const SpatialIndexDevice &spatial,
     float rad_sqr,
     int max_candidates,
@@ -279,7 +257,7 @@ void launch_discover_and_stage_neighbors_kernel(
         return;
     }
 
-    const int num_blocks = div_up(cfg.num_edges, threads_per_block);
+    const int num_blocks = div_up(num_edges, threads_per_block);
     const size_t shmem_bytes = static_cast<size_t>(threads_per_block)
         * static_cast<size_t>(max_candidates) * sizeof(NeighborCandidate);
 
@@ -287,14 +265,14 @@ void launch_discover_and_stage_neighbors_kernel(
            threads_per_block, static_cast<double>(shmem_bytes) / 1024.0);
 
     discover_and_stage_neighbors_kernel<<<num_blocks, threads_per_block, shmem_bytes>>>(
-        cfg.num_edges, max_candidates, spatial, rad_sqr, cfg.neighbor_radius,
+        num_edges, max_candidates, spatial, rad_sqr, params.get_neighbor_radius(),
         dev_staged_counts, dev_staged_ids, dev_staged_dist2,
         dev_max_num_of_neighbors, dev_truncated_anchors);
     cudacheck(cudaGetLastError());
 }
 
 void launch_discover_and_stage_neighbors_warp_kernel(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     const SpatialIndexDevice &spatial,
     float rad_sqr,
     int max_candidates,
@@ -304,7 +282,7 @@ void launch_discover_and_stage_neighbors_warp_kernel(
     unsigned *dev_max_num_of_neighbors,
     unsigned *dev_truncated_anchors)
 {
-    const int warps_per_block = cfg.neighbor_warps_per_block;
+    const int warps_per_block = params.neighbor_warps_per_block;
     if (warps_per_block <= 0 || warps_per_block > 32) {
         fprintf(stderr,
                 "launch_discover_and_stage_neighbors_warp_kernel: invalid neighbor_warps_per_block=%d (use 1..32)\n",
@@ -313,7 +291,7 @@ void launch_discover_and_stage_neighbors_warp_kernel(
     }
 
     const int threads_per_block = warps_per_block * 32;
-    const int num_blocks = div_up(cfg.num_edges, warps_per_block);
+    const int num_blocks = div_up(num_edges, warps_per_block);
     const size_t shmem_bytes = static_cast<size_t>(warps_per_block) * static_cast<size_t>(max_candidates)
         * sizeof(NeighborCandidate)
         + static_cast<size_t>(warps_per_block) * sizeof(int);
@@ -322,21 +300,21 @@ void launch_discover_and_stage_neighbors_warp_kernel(
            warps_per_block, threads_per_block, static_cast<double>(shmem_bytes) / 1024.0);
 
     discover_and_stage_neighbors_warp_kernel<<<num_blocks, threads_per_block, shmem_bytes>>>(
-        cfg.num_edges, max_candidates, warps_per_block,
-        spatial, rad_sqr, cfg.neighbor_radius,
+        num_edges, max_candidates, warps_per_block,
+        spatial, rad_sqr, params.get_neighbor_radius(),
         dev_staged_counts, dev_staged_ids, dev_staged_dist2,
         dev_max_num_of_neighbors, dev_truncated_anchors);
     cudacheck(cudaGetLastError());
 }
 
 void launch_count_neighbors_warp_kernel(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     const SpatialIndexDevice &spatial,
     float rad_sqr,
     int *dev_neighbor_counts,
     unsigned *dev_max_num_of_neighbors)
 {
-    const int warps_per_block = cfg.neighbor_warps_per_block;
+    const int warps_per_block = params.neighbor_warps_per_block;
     if (warps_per_block <= 0 || warps_per_block > 32) {
         fprintf(stderr,
                 "launch_count_neighbors_warp_kernel: invalid neighbor_warps_per_block=%d (use 1..32)\n",
@@ -345,20 +323,20 @@ void launch_count_neighbors_warp_kernel(
     }
 
     const int threads_per_block = warps_per_block * 32;
-    const int num_blocks = div_up(cfg.num_edges, warps_per_block);
+    const int num_blocks = div_up(num_edges, warps_per_block);
     const size_t shmem_bytes = static_cast<size_t>(warps_per_block) * sizeof(int);
 
     printf("[two-pass warp count] warps/block=%d, threads/block=%d, shmem=%.2f KB\n",
            warps_per_block, threads_per_block, static_cast<double>(shmem_bytes) / 1024.0);
 
     count_neighbors_warp_kernel<<<num_blocks, threads_per_block, shmem_bytes>>>(
-        cfg.num_edges, warps_per_block, spatial, rad_sqr, cfg.neighbor_radius,
+        num_edges, warps_per_block, spatial, rad_sqr, params.get_neighbor_radius(),
         dev_neighbor_counts, dev_max_num_of_neighbors);
     cudacheck(cudaGetLastError());
 }
 
 void launch_fill_csr_neighbors_warp_kernel(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     const SpatialIndexDevice &spatial,
     float rad_sqr,
     const int *dev_neighbor_counts,
@@ -367,7 +345,7 @@ void launch_fill_csr_neighbors_warp_kernel(
     float *dev_neighbor_dist2,
     unsigned max_num_of_neighbors)
 {
-    const int warps_per_block = cfg.neighbor_warps_per_block;
+    const int warps_per_block = params.neighbor_warps_per_block;
     if (warps_per_block <= 0 || warps_per_block > 32) {
         fprintf(stderr,
                 "launch_fill_csr_neighbors_warp_kernel: invalid neighbor_warps_per_block=%d (use 1..32)\n",
@@ -376,7 +354,7 @@ void launch_fill_csr_neighbors_warp_kernel(
     }
 
     const int threads_per_block = warps_per_block * 32;
-    const int num_blocks = div_up(cfg.num_edges, warps_per_block);
+    const int num_blocks = div_up(num_edges, warps_per_block);
     const size_t shmem_bytes = static_cast<size_t>(warps_per_block) * static_cast<size_t>(max_num_of_neighbors)
         * sizeof(NeighborCandidate)
         + static_cast<size_t>(warps_per_block) * sizeof(int);
@@ -385,15 +363,15 @@ void launch_fill_csr_neighbors_warp_kernel(
            warps_per_block, max_num_of_neighbors, static_cast<double>(shmem_bytes) / 1024.0);
 
     fill_csr_neighbors_warp_kernel<<<num_blocks, threads_per_block, shmem_bytes>>>(
-        cfg.num_edges, max_num_of_neighbors, warps_per_block,
-        spatial, rad_sqr, cfg.neighbor_radius,
+        num_edges, max_num_of_neighbors, warps_per_block,
+        spatial, rad_sqr, params.get_neighbor_radius(),
         dev_neighbor_counts, dev_neighbor_offsets,
         dev_neighbor_ids, dev_neighbor_dist2);
     cudacheck(cudaGetLastError());
 }
 
 void launch_compact_staged_neighbors_kernel(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     int max_candidates,
     const int *dev_staged_counts,
     const int *dev_staged_ids,
@@ -410,17 +388,17 @@ void launch_compact_staged_neighbors_kernel(
         return;
     }
 
-    const int num_blocks = div_up(cfg.num_edges, threads_per_block);
+    const int num_blocks = div_up(num_edges, threads_per_block);
 
     compact_staged_neighbors_kernel<<<num_blocks, threads_per_block>>>(
-        cfg.num_edges, max_candidates,
+        num_edges, max_candidates,
         dev_staged_counts, dev_staged_ids, dev_staged_dist2,
         dev_neighbor_offsets, dev_neighbor_ids, dev_neighbor_dist2);
     cudacheck(cudaGetLastError());
 }
 
 bool build_CSR_graph_twopass(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     const SpatialIndexHost &index,
     float rad_sqr,
     GPUNeighborGraph &graph,
@@ -431,23 +409,23 @@ bool build_CSR_graph_twopass(
     int *dev_neighbor_counts = nullptr;
     unsigned *dev_max_num_of_neighbors = nullptr;
     int *dev_neighbor_offsets = nullptr;
-    cudacheck(cudaMalloc(&dev_neighbor_counts, static_cast<size_t>(cfg.num_edges) * sizeof(int)));
+    cudacheck(cudaMalloc(&dev_neighbor_counts, static_cast<size_t>(num_edges) * sizeof(int)));
     cudacheck(cudaMalloc(&dev_max_num_of_neighbors, sizeof(unsigned)));
-    cudacheck(cudaMalloc(&dev_neighbor_offsets, static_cast<size_t>(cfg.num_edges + 1) * sizeof(int)));
+    cudacheck(cudaMalloc(&dev_neighbor_offsets, static_cast<size_t>(num_edges + 1) * sizeof(int)));
     cudacheck(cudaMemset(dev_max_num_of_neighbors, 0, sizeof(unsigned)));
     profile_lap(profiler, TimerCategory::MemoryAlloc, "two-pass count/offset buffers");
 
-    if (cfg.csr_discover_mode == GPUNeighborCSRDiscoverMode::Warp) {
+    if (params.csr_discover_mode == "warp") {
         launch_count_neighbors_warp_kernel(
-            cfg, spatial, rad_sqr,
+            params, num_edges, spatial, rad_sqr,
             dev_neighbor_counts, dev_max_num_of_neighbors);
         cudacheck(cudaDeviceSynchronize());
         profile_lap(profiler, TimerCategory::Kernel, "two-pass warp count_neighbors_warp_kernel");
     }
     else {
         launch_neighbor_count_kernel(
-            cfg, spatial, rad_sqr,
-            dev_neighbor_counts, dev_max_num_of_neighbors, cfg.neighbor_count_threads);
+            params, num_edges, spatial, rad_sqr,
+            dev_neighbor_counts, dev_max_num_of_neighbors, params.neighbor_count_threads);
         cudacheck(cudaDeviceSynchronize());
         profile_lap(profiler, TimerCategory::Kernel, "two-pass count_neighbors_kernel");
     }
@@ -456,7 +434,7 @@ bool build_CSR_graph_twopass(
     cudacheck(cudaMemcpy(&max_num_of_neighbors, dev_max_num_of_neighbors, sizeof(unsigned), cudaMemcpyDeviceToHost));
     profile_lap(profiler, TimerCategory::DataTransfer, "two-pass max degree D->H");
 
-    const int total_pairs = finalize_neighbor_offsets(cfg.num_edges, dev_neighbor_counts, dev_neighbor_offsets);
+    const int total_pairs = finalize_neighbor_offsets(num_edges, dev_neighbor_counts, dev_neighbor_offsets);
     profile_lap(profiler, TimerCategory::Thrust, "two-pass neighbor offsets scan");
 
     int *dev_neighbor_ids = nullptr;
@@ -467,53 +445,47 @@ bool build_CSR_graph_twopass(
     }
     profile_lap(profiler, TimerCategory::MemoryAlloc, "two-pass compact CSR buffers");
 
-    if (cfg.csr_discover_mode == GPUNeighborCSRDiscoverMode::Warp) {
+    if (params.csr_discover_mode == "warp") {
         launch_fill_csr_neighbors_warp_kernel(
-            cfg, spatial, rad_sqr, dev_neighbor_counts, dev_neighbor_offsets,
+            params, num_edges, spatial, rad_sqr, dev_neighbor_counts, dev_neighbor_offsets,
             dev_neighbor_ids, dev_neighbor_dist2, max_num_of_neighbors);
         cudacheck(cudaDeviceSynchronize());
         profile_lap(profiler, TimerCategory::Kernel, "two-pass warp fill_csr_neighbors_warp_kernel");
     }
     else {
         launch_fill_csr_neighbors_kernel(
-            cfg, spatial, rad_sqr, dev_neighbor_counts, dev_neighbor_offsets,
-            dev_neighbor_ids, dev_neighbor_dist2, max_num_of_neighbors, cfg.neighbor_fill_threads);
+            params, num_edges, spatial, rad_sqr, dev_neighbor_counts, dev_neighbor_offsets,
+            dev_neighbor_ids, dev_neighbor_dist2, max_num_of_neighbors, params.neighbor_fill_threads);
         cudacheck(cudaDeviceSynchronize());
         profile_lap(profiler, TimerCategory::Kernel, "two-pass fill_csr_neighbors_kernel");
     }
 
-    graph.num_edges = cfg.num_edges;
+    graph.num_edges = num_edges;
     graph.total_neighbor_pairs = total_pairs;
     graph.max_num_of_neighbors = max_num_of_neighbors;
-    graph.layout = GPUNeighborLayout::CSR;
+    graph.layout = "csr";
     graph.dev_edges = index.dev_edges;
     graph.dev_neighbor_offsets = dev_neighbor_offsets;
     graph.dev_neighbor_ids = dev_neighbor_ids;
     graph.dev_neighbor_dist2 = dev_neighbor_dist2;
 
-    if (cfg.copy_to_host) {
-        copy_csr_graph_to_host(
-            cfg, index, total_pairs,
-            dev_neighbor_offsets, dev_neighbor_ids, dev_neighbor_dist2, graph);
-        profile_lap(profiler, TimerCategory::DataTransfer, "two-pass CSR D->H");
-    }
 
     cudaFree(dev_neighbor_counts);
     cudaFree(dev_max_num_of_neighbors);
     profile_lap(profiler, TimerCategory::Other, "two-pass temp buffer free");
 
-    print_csr_graph_stats("[two-pass] ", cfg, total_pairs, max_num_of_neighbors);
+    print_csr_graph_stats("[two-pass] ", params, num_edges, total_pairs, max_num_of_neighbors);
     return true;
 }
 
 bool build_CSR_graph_singlepass(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     const SpatialIndexHost &index,
     float rad_sqr,
     GPUNeighborGraph &graph,
     CategoryProfiler *profiler)
 {
-    const int max_candidates = static_cast<int>(cfg.max_candidates);
+    const int max_candidates = static_cast<int>(params.max_candidates);
     const SpatialIndexDevice spatial = spatial_device_view(index);
 
     int *dev_staged_counts = nullptr;
@@ -523,19 +495,19 @@ bool build_CSR_graph_singlepass(
     unsigned *dev_truncated_anchors = nullptr;
     int *dev_neighbor_offsets = nullptr;
 
-    cudacheck(cudaMalloc(&dev_staged_counts, static_cast<size_t>(cfg.num_edges) * sizeof(int)));
-    cudacheck(cudaMalloc(&dev_staged_ids,    static_cast<size_t>(cfg.num_edges) * static_cast<size_t>(max_candidates) * sizeof(int)));
-    cudacheck(cudaMalloc(&dev_staged_dist2,  static_cast<size_t>(cfg.num_edges) * static_cast<size_t>(max_candidates) * sizeof(float)));
+    cudacheck(cudaMalloc(&dev_staged_counts, static_cast<size_t>(num_edges) * sizeof(int)));
+    cudacheck(cudaMalloc(&dev_staged_ids,    static_cast<size_t>(num_edges) * static_cast<size_t>(max_candidates) * sizeof(int)));
+    cudacheck(cudaMalloc(&dev_staged_dist2,  static_cast<size_t>(num_edges) * static_cast<size_t>(max_candidates) * sizeof(float)));
     cudacheck(cudaMalloc(&dev_max_num_of_neighbors, sizeof(unsigned)));
     cudacheck(cudaMalloc(&dev_truncated_anchors, sizeof(unsigned)));
-    cudacheck(cudaMalloc(&dev_neighbor_offsets, static_cast<size_t>(cfg.num_edges + 1) * sizeof(int)));
+    cudacheck(cudaMalloc(&dev_neighbor_offsets, static_cast<size_t>(num_edges + 1) * sizeof(int)));
     cudacheck(cudaMemset(dev_max_num_of_neighbors, 0, sizeof(unsigned)));
     cudacheck(cudaMemset(dev_truncated_anchors, 0, sizeof(unsigned)));
     profile_lap(profiler, TimerCategory::MemoryAlloc, "single-pass staging buffers");
 
-    if (cfg.csr_discover_mode == GPUNeighborCSRDiscoverMode::Warp) {
+    if (params.csr_discover_mode == "warp") {
         launch_discover_and_stage_neighbors_warp_kernel(
-            cfg, spatial, rad_sqr, max_candidates,
+            params, num_edges, spatial, rad_sqr, max_candidates,
             dev_staged_counts, dev_staged_ids, dev_staged_dist2,
             dev_max_num_of_neighbors, dev_truncated_anchors);
         cudacheck(cudaDeviceSynchronize());
@@ -543,14 +515,14 @@ bool build_CSR_graph_singlepass(
     }
     else {
         launch_discover_and_stage_neighbors_kernel(
-            cfg, spatial, rad_sqr, max_candidates,
+            params, num_edges, spatial, rad_sqr, max_candidates,
             dev_staged_counts, dev_staged_ids, dev_staged_dist2,
-            dev_max_num_of_neighbors, dev_truncated_anchors, cfg.neighbor_stage_threads);
+            dev_max_num_of_neighbors, dev_truncated_anchors, params.neighbor_stage_threads);
         cudacheck(cudaDeviceSynchronize());
         profile_lap(profiler, TimerCategory::Kernel, "single-pass discover_and_stage_neighbors_kernel");
     }
 
-    const int total_pairs = finalize_neighbor_offsets(cfg.num_edges, dev_staged_counts, dev_neighbor_offsets);
+    const int total_pairs = finalize_neighbor_offsets(num_edges, dev_staged_counts, dev_neighbor_offsets);
     profile_lap(profiler, TimerCategory::Thrust, "single-pass neighbor offsets scan");
 
     int *dev_neighbor_ids = nullptr;
@@ -562,10 +534,10 @@ bool build_CSR_graph_singlepass(
     profile_lap(profiler, TimerCategory::MemoryAlloc, "single-pass compact CSR buffers");
 
     launch_compact_staged_neighbors_kernel(
-        cfg, max_candidates,
+        params, num_edges, max_candidates,
         dev_staged_counts, dev_staged_ids, dev_staged_dist2,
         dev_neighbor_offsets, dev_neighbor_ids, dev_neighbor_dist2,
-        cfg.neighbor_stage_threads);
+        params.neighbor_stage_threads);
     cudacheck(cudaDeviceSynchronize());
     profile_lap(profiler, TimerCategory::Kernel, "single-pass compact_staged_neighbors_kernel");
 
@@ -579,21 +551,15 @@ bool build_CSR_graph_singlepass(
     }
     profile_lap(profiler, TimerCategory::DataTransfer, "single-pass stats D->H");
 
-    graph.num_edges = cfg.num_edges;
+    graph.num_edges = num_edges;
     graph.total_neighbor_pairs = total_pairs;
     graph.max_num_of_neighbors = max_num_of_neighbors;
-    graph.layout = GPUNeighborLayout::CSR;
+    graph.layout = "csr";
     graph.dev_edges = index.dev_edges;
     graph.dev_neighbor_offsets = dev_neighbor_offsets;
     graph.dev_neighbor_ids = dev_neighbor_ids;
     graph.dev_neighbor_dist2 = dev_neighbor_dist2;
 
-    if (cfg.copy_to_host) {
-        copy_csr_graph_to_host(
-            cfg, index, total_pairs,
-            dev_neighbor_offsets, dev_neighbor_ids, dev_neighbor_dist2, graph);
-        profile_lap(profiler, TimerCategory::DataTransfer, "single-pass CSR D->H");
-    }
 
     cudaFree(dev_staged_counts);
     cudaFree(dev_staged_ids);
@@ -602,67 +568,41 @@ bool build_CSR_graph_singlepass(
     cudaFree(dev_truncated_anchors);
     profile_lap(profiler, TimerCategory::Other, "single-pass staging buffer free");
 
-    const double staged_mb = static_cast<double>(cfg.num_edges) * max_candidates * (sizeof(int) + sizeof(float)) / (1024.0 * 1024.0);
+    const double staged_mb = static_cast<double>(num_edges) * max_candidates * (sizeof(int) + sizeof(float)) / (1024.0 * 1024.0);
     printf("[single-pass] staged buffer: %.2f MB (num_edges x max_candidates)\n", staged_mb);
-    print_csr_graph_stats("[single-pass] ", cfg, total_pairs, max_num_of_neighbors);
+    print_csr_graph_stats("[single-pass] ", params, num_edges, total_pairs, max_num_of_neighbors);
     return true;
 }
 
-void copy_fixed_row_graph_to_host(
-    const GPUPreprocessConfig &cfg,
-    const SpatialIndexHost &index,
-    int *dev_neighbor_counts,
-    int *dev_neighbor_list,
-    float *dev_neighbor_dist2_row,
-    GPUNeighborGraph &graph)
-{
-    const size_t edge_bytes = static_cast<size_t>(cfg.num_edges) * cfg.sz_edge_data * sizeof(float);
-    const int slots = graph.neighbor_slots_per_anchor;
-    const size_t row_ints = static_cast<size_t>(cfg.num_edges) * static_cast<size_t>(slots);
-
-    graph.host_edges = new float[static_cast<size_t>(cfg.num_edges) * cfg.sz_edge_data];
-    graph.host_neighbor_counts = new int[static_cast<size_t>(cfg.num_edges)];
-    graph.host_neighbor_list = new int[row_ints];
-    graph.host_neighbor_dist2_row = new float[row_ints];
-
-    cudacheck(cudaMemcpy(graph.host_edges, index.dev_edges, edge_bytes, cudaMemcpyDeviceToHost));
-    cudacheck(cudaMemcpy(
-        graph.host_neighbor_counts, dev_neighbor_counts,
-        static_cast<size_t>(cfg.num_edges) * sizeof(int), cudaMemcpyDeviceToHost));
-    cudacheck(cudaMemcpy(graph.host_neighbor_list, dev_neighbor_list, row_ints * sizeof(int), cudaMemcpyDeviceToHost));
-    cudacheck(cudaMemcpy(
-        graph.host_neighbor_dist2_row, dev_neighbor_dist2_row,
-        row_ints * sizeof(float), cudaMemcpyDeviceToHost));
-}
 
 void print_fixed_row_graph_stats(
     const char *label,
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     int total_pairs,
     unsigned max_num_of_neighbors,
     int slots_per_anchor)
 {
-    const size_t row_elems = static_cast<size_t>(cfg.num_edges) * static_cast<size_t>(slots_per_anchor);
+    const size_t row_elems = static_cast<size_t>(num_edges) * static_cast<size_t>(slots_per_anchor);
     printf("%sFixed-row neighbor graph: %d anchors, %d slots/anchor, %d total pairs, max degree %u\n",
-           label, cfg.num_edges, slots_per_anchor, total_pairs, max_num_of_neighbors);
+           label, num_edges, slots_per_anchor, total_pairs, max_num_of_neighbors);
     printf("%sFixed-row memory (device): edges %.2f MB + list %.2f MB + dist2 %.2f MB + counts %.2f KB\n",
            label,
-           static_cast<double>(cfg.num_edges) * cfg.sz_edge_data * sizeof(float) / (1024.0 * 1024.0),
+           static_cast<double>(num_edges) * params.edge_data_sz * sizeof(float) / (1024.0 * 1024.0),
            static_cast<double>(row_elems) * sizeof(int) / (1024.0 * 1024.0),
            static_cast<double>(row_elems) * sizeof(float) / (1024.0 * 1024.0),
-           static_cast<double>(cfg.num_edges) * sizeof(int) / 1024.0);
+           static_cast<double>(num_edges) * sizeof(int) / 1024.0);
 }
 
 bool build_neighbor_graph_fixed_row(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     const SpatialIndexHost &index,
     float rad_sqr,
     GPUNeighborGraph &graph,
     CategoryProfiler *profiler)
 {
-    const int max_candidates = static_cast<int>(cfg.max_candidates);
+    const int max_candidates = static_cast<int>(params.max_candidates);
     const SpatialIndexDevice spatial = spatial_device_view(index);
-    const size_t row_ints = static_cast<size_t>(cfg.num_edges) * static_cast<size_t>(max_candidates);
+    const size_t row_ints = static_cast<size_t>(num_edges) * static_cast<size_t>(max_candidates);
 
     int *dev_neighbor_counts = nullptr;
     int *dev_neighbor_list = nullptr;
@@ -670,7 +610,7 @@ bool build_neighbor_graph_fixed_row(
     unsigned *dev_max_num_of_neighbors = nullptr;
     unsigned *dev_truncated_anchors = nullptr;
 
-    cudacheck(cudaMalloc(&dev_neighbor_counts, static_cast<size_t>(cfg.num_edges) * sizeof(int)));
+    cudacheck(cudaMalloc(&dev_neighbor_counts, static_cast<size_t>(num_edges) * sizeof(int)));
     cudacheck(cudaMalloc(&dev_neighbor_list, row_ints * sizeof(int)));
     cudacheck(cudaMalloc(&dev_neighbor_dist2_row, row_ints * sizeof(float)));
     cudacheck(cudaMalloc(&dev_max_num_of_neighbors, sizeof(unsigned)));
@@ -682,9 +622,9 @@ bool build_neighbor_graph_fixed_row(
     profile_lap(profiler, TimerCategory::MemoryAlloc, "fixed-row stage neighbor buffers");
 
     launch_discover_and_stage_neighbors_kernel(
-        cfg, spatial, rad_sqr, max_candidates,
+        params, num_edges, spatial, rad_sqr, max_candidates,
         dev_neighbor_counts, dev_neighbor_list, dev_neighbor_dist2_row,
-        dev_max_num_of_neighbors, dev_truncated_anchors, cfg.neighbor_stage_threads);
+        dev_max_num_of_neighbors, dev_truncated_anchors, params.neighbor_stage_threads);
     cudacheck(cudaDeviceSynchronize());
     profile_lap(profiler, TimerCategory::Kernel, "fixed-row stage discover_and_stage_neighbors_kernel");
 
@@ -699,25 +639,12 @@ bool build_neighbor_graph_fixed_row(
     }
     profile_lap(profiler, TimerCategory::DataTransfer, "fixed-row stage stats D->H");
 
-    int total_pairs = 0;
-    if (cfg.copy_to_host) {
-        std::vector<int> host_counts(static_cast<size_t>(cfg.num_edges));
-        cudacheck(cudaMemcpy(
-            host_counts.data(), dev_neighbor_counts,
-            static_cast<size_t>(cfg.num_edges) * sizeof(int), cudaMemcpyDeviceToHost));
-        for (int c : host_counts) {
-            total_pairs += c;
-        }
-        profile_lap(profiler, TimerCategory::DataTransfer, "fixed-row stage counts D->H (host sum)");
-    }
-    else {
-        thrust::device_ptr<int> d_counts(dev_neighbor_counts);
-        total_pairs = thrust::reduce(d_counts, d_counts + cfg.num_edges, 0);
-        profile_lap(profiler, TimerCategory::Thrust, "fixed-row stage reduce neighbor counts");
-    }
+    thrust::device_ptr<int> d_counts(dev_neighbor_counts);
+    const int total_pairs = thrust::reduce(d_counts, d_counts + num_edges, 0);
+    profile_lap(profiler, TimerCategory::Thrust, "fixed-row stage reduce neighbor counts");
 
-    graph.layout = GPUNeighborLayout::FixedRow;
-    graph.num_edges = cfg.num_edges;
+    graph.layout = "fixed-row";
+    graph.num_edges = num_edges;
     graph.total_neighbor_pairs = total_pairs;
     graph.max_num_of_neighbors = max_num_of_neighbors;
     graph.neighbor_slots_per_anchor = max_candidates;
@@ -726,30 +653,25 @@ bool build_neighbor_graph_fixed_row(
     graph.dev_neighbor_dist2_row = dev_neighbor_dist2_row;
     graph.dev_neighbor_counts = dev_neighbor_counts;
 
-    if (cfg.copy_to_host) {
-        copy_fixed_row_graph_to_host(
-            cfg, index, dev_neighbor_counts, dev_neighbor_list, dev_neighbor_dist2_row, graph);
-        profile_lap(profiler, TimerCategory::DataTransfer, "fixed-row stage graph D->H");
-    }
 
     cudaFree(dev_max_num_of_neighbors);
     cudaFree(dev_truncated_anchors);
     profile_lap(profiler, TimerCategory::Other, "fixed-row stage temp buffer free");
 
-    print_fixed_row_graph_stats("[fixed-row] ", cfg, total_pairs, max_num_of_neighbors, max_candidates);
+    print_fixed_row_graph_stats("[fixed-row] ", params, num_edges, total_pairs, max_num_of_neighbors, max_candidates);
     return true;
 }
 
 bool build_neighbor_graph_fixed_row_warp(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     const SpatialIndexHost &index,
     float rad_sqr,
     GPUNeighborGraph &graph,
     CategoryProfiler *profiler)
 {
-    const int max_candidates = static_cast<int>(cfg.max_candidates);
+    const int max_candidates = static_cast<int>(params.max_candidates);
     const SpatialIndexDevice spatial = spatial_device_view(index);
-    const size_t row_ints = static_cast<size_t>(cfg.num_edges) * static_cast<size_t>(max_candidates);
+    const size_t row_ints = static_cast<size_t>(num_edges) * static_cast<size_t>(max_candidates);
 
     int *dev_neighbor_counts = nullptr;
     int *dev_neighbor_list = nullptr;
@@ -757,7 +679,7 @@ bool build_neighbor_graph_fixed_row_warp(
     unsigned *dev_max_num_of_neighbors = nullptr;
     unsigned *dev_truncated_anchors = nullptr;
 
-    cudacheck(cudaMalloc(&dev_neighbor_counts, static_cast<size_t>(cfg.num_edges) * sizeof(int)));
+    cudacheck(cudaMalloc(&dev_neighbor_counts, static_cast<size_t>(num_edges) * sizeof(int)));
     cudacheck(cudaMalloc(&dev_neighbor_list, row_ints * sizeof(int)));
     cudacheck(cudaMalloc(&dev_neighbor_dist2_row, row_ints * sizeof(float)));
     cudacheck(cudaMalloc(&dev_max_num_of_neighbors, sizeof(unsigned)));
@@ -769,7 +691,7 @@ bool build_neighbor_graph_fixed_row_warp(
     profile_lap(profiler, TimerCategory::MemoryAlloc, "fixed-row warp neighbor buffers");
 
     launch_discover_fixed_row_warp_kernel(
-        cfg, spatial, rad_sqr, max_candidates,
+        params, num_edges, spatial, rad_sqr, max_candidates,
         dev_neighbor_counts, dev_neighbor_list, dev_neighbor_dist2_row,
         dev_max_num_of_neighbors, dev_truncated_anchors);
     cudacheck(cudaDeviceSynchronize());
@@ -786,23 +708,12 @@ bool build_neighbor_graph_fixed_row_warp(
     }
     profile_lap(profiler, TimerCategory::DataTransfer, "fixed-row warp stats D->H");
 
-    int total_pairs = 0;
-    if (cfg.copy_to_host) {
-        std::vector<int> host_counts(static_cast<size_t>(cfg.num_edges));
-        cudacheck(cudaMemcpy( host_counts.data(), dev_neighbor_counts, static_cast<size_t>(cfg.num_edges) * sizeof(int), cudaMemcpyDeviceToHost ));
-        for (int c : host_counts) {
-            total_pairs += c;
-        }
-        profile_lap(profiler, TimerCategory::DataTransfer, "fixed-row warp counts D->H (host sum)");
-    }
-    else {
-        thrust::device_ptr<int> d_counts(dev_neighbor_counts);
-        total_pairs = thrust::reduce(d_counts, d_counts + cfg.num_edges, 0);
-        profile_lap(profiler, TimerCategory::Thrust, "fixed-row warp reduce neighbor counts");
-    }
+    thrust::device_ptr<int> d_counts(dev_neighbor_counts);
+    const int total_pairs = thrust::reduce(d_counts, d_counts + num_edges, 0);
+    profile_lap(profiler, TimerCategory::Thrust, "fixed-row warp reduce neighbor counts");
 
-    graph.layout = GPUNeighborLayout::FixedRow;
-    graph.num_edges = cfg.num_edges;
+    graph.layout = "fixed-row";
+    graph.num_edges = num_edges;
     graph.total_neighbor_pairs = total_pairs;
     graph.max_num_of_neighbors = max_num_of_neighbors;
     graph.neighbor_slots_per_anchor = max_candidates;
@@ -811,96 +722,109 @@ bool build_neighbor_graph_fixed_row_warp(
     graph.dev_neighbor_dist2_row = dev_neighbor_dist2_row;
     graph.dev_neighbor_counts = dev_neighbor_counts;
 
-    if (cfg.copy_to_host) {
-        copy_fixed_row_graph_to_host(cfg, index, dev_neighbor_counts, dev_neighbor_list, dev_neighbor_dist2_row, graph);
-        profile_lap(profiler, TimerCategory::DataTransfer, "fixed-row warp graph D->H");
-    }
 
     cudaFree(dev_max_num_of_neighbors);
     cudaFree(dev_truncated_anchors);
     profile_lap(profiler, TimerCategory::Other, "fixed-row warp temp buffer free");
 
-    print_fixed_row_graph_stats("[fixed-row warp] ", cfg, total_pairs, max_num_of_neighbors, max_candidates);
+#if VERBOSE
+    // print_fixed_row_graph_stats("[fixed-row warp] ", params, num_edges, total_pairs, max_num_of_neighbors, max_candidates);
+#endif
     return true;
 }
 
 bool build_CSR_graph(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     const SpatialIndexHost &index,
     float rad_sqr,
     GPUNeighborGraph &graph,
     CategoryProfiler *profiler)
 {
-    const bool warp_discover = (cfg.csr_discover_mode == GPUNeighborCSRDiscoverMode::Warp);
-    if (cfg.csr_strategy == GPUNeighborCSRStrategy::TwoPass) {
+    const bool warp_discover = (params.csr_discover_mode == "warp");
+    if (params.csr_strategy == "two-pass" || params.csr_strategy == "twopass") {
         std::cout << "Building CSR graph using two-pass strategy"
                   << (warp_discover ? " (warp per anchor)" : " (thread per anchor)")
                   << std::endl;
-        return build_CSR_graph_twopass(cfg, index, rad_sqr, graph, profiler);
+        return build_CSR_graph_twopass(params, num_edges, index, rad_sqr, graph, profiler);
     }
 
     std::cout << "Building CSR graph using single-pass strategy"
               << (warp_discover ? " (warp per anchor)" : " (thread per anchor)")
               << std::endl;
-    return build_CSR_graph_singlepass(cfg, index, rad_sqr, graph, profiler);
+    return build_CSR_graph_singlepass(params, num_edges, index, rad_sqr, graph, profiler);
 }
 
 bool build_neighbor_graph(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params, int num_edges,
     const SpatialIndexHost &index,
     float rad_sqr,
     GPUNeighborGraph &graph,
     CategoryProfiler *profiler)
 {
-    if (cfg.neighbor_layout == GPUNeighborLayout::FixedRow) {
-        if (cfg.fixed_row_build == GPUFixedRowBuildStrategy::Warp) {
-            std::cout << "Building neighbor graph using fixed-row warp layout (one warp per anchor)" << std::endl;
-            return build_neighbor_graph_fixed_row_warp(cfg, index, rad_sqr, graph, profiler);
-        }
-        std::cout << "Building neighbor graph using fixed-row layout (edgeLookList-style)" << std::endl;
-        return build_neighbor_graph_fixed_row(cfg, index, rad_sqr, graph, profiler);
+    //> Sanity check for the input configs
+    if (params.neighbor_layout != "fixed-row" && params.neighbor_layout != "csr") {
+        fprintf(stderr, "Invalid neighbor layout: %s\n", params.neighbor_layout.c_str());
+        return false;
+    }
+    if (params.fixed_row_build != "warp" && params.fixed_row_build != "stage"
+        && params.fixed_row_build != "thread") {
+        fprintf(stderr, "Invalid fixed-row build strategy: %s (expected: warp | stage)\n",
+                params.fixed_row_build.c_str());
+        return false;
     }
 
-    return build_CSR_graph(cfg, index, rad_sqr, graph, profiler);
+    if (params.neighbor_layout == "fixed-row") {
+        if (params.fixed_row_build == "warp") {
+            std::cout << "Building neighbor graph using fixed-row warp layout (one warp per anchor)" << std::endl;
+            return build_neighbor_graph_fixed_row_warp(params, num_edges, index, rad_sqr, graph, profiler);
+        }
+        std::cout << "Building neighbor graph using fixed-row layout (edgeLookList-style)" << std::endl;
+        return build_neighbor_graph_fixed_row(params, num_edges, index, rad_sqr, graph, profiler);
+    }
+
+    return build_CSR_graph(params, num_edges, index, rad_sqr, graph, profiler);
 }
 
 } // namespace
 
-//> MAIN: Build the CSR graph for the neighbor-search stage of curvelet construction.
+//> MAIN: Build the neighbor graph for the neighbor-search stage of curvelet construction.
 bool gpu_preprocess_build(
-    const GPUPreprocessConfig &cfg,
+    const CurveletParams &params,
+    int device_id,
+    int num_edges,
     const float *host_to_edges,
-    GPUPreprocessResult &result,
+    GPUNeighborGraph &graph,
     CategoryProfiler *profiler)
 {
-    //> Free the previous result just in case
-    gpu_preprocess_free(result);
+    //> Free the previous graph just in case
+    gpu_preprocess_free(graph);
 
-    if (cfg.num_edges <= 0 || cfg.sz_edge_data < kEdgeFields || host_to_edges == nullptr) {
+    if (num_edges <= 0 || params.edge_data_sz < kEdgeFields || host_to_edges == nullptr) {
         fprintf(stderr,
                 "gpu_preprocess_build: invalid inputs: num_edges=%d, sz_edge_data=%d, host_to_edges=%p\n",
-                cfg.num_edges, cfg.sz_edge_data, static_cast<const void *>(host_to_edges));
+                num_edges, params.edge_data_sz, static_cast<const void *>(host_to_edges));
         return false;
     }
 
-    cudacheck(cudaSetDevice(cfg.device_id));
+    cudacheck(cudaSetDevice(device_id));
 
     //> Radius centered at anchor edge
-    const float rad_sqr = cfg.rad * cfg.rad;
+    const float rad = static_cast<float>(params.nrad);
+    const float rad_sqr = rad * rad;
 
     //> PHASE I: BUILD SPATIAL INDEX
     SpatialIndexHost spatial;
-    if (!build_spatial_index(cfg, host_to_edges, spatial, profiler)) {
+    if (!build_spatial_index(params, num_edges, host_to_edges, spatial, profiler)) {
         return false;
     }
 
     //> PHASE II: BUILD NEIGHBOR GRAPH
-    if (!build_neighbor_graph(cfg, spatial, rad_sqr, result.csr, profiler)) {
+    if (!build_neighbor_graph(params, num_edges, spatial, rad_sqr, graph, profiler)) {
         free_spatial_index(spatial);
         return false;
     }
 
-    //> dev_edges ownership transferred to result.csr; clear pointer so free_spatial_index skips it
+    //> dev_edges ownership transferred to graph; clear pointer so free_spatial_index skips it
     spatial.dev_edges = nullptr;
     free_spatial_index(spatial);
     profile_lap(profiler, TimerCategory::Other, "free_spatial_index");
@@ -929,10 +853,6 @@ void gpu_preprocess_free(GPUNeighborGraph &graph)
     delete[] graph.host_neighbor_list;
     delete[] graph.host_neighbor_dist2_row;
     delete[] graph.host_neighbor_counts;
-}
 
-void gpu_preprocess_free(GPUPreprocessResult &result)
-{
-    gpu_preprocess_free(result.csr);
-    result.csr = GPUNeighborGraph{};
+    graph = GPUNeighborGraph{};
 }
