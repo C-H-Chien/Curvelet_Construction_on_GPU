@@ -22,11 +22,10 @@ struct GPUCurveletChainStorage {
     int bundle_cells = 0;
 
     //> Warp growth shared-memory plan (set at allocate / launch time)
-    //> 0=none, 1=lane workspace in shared, 2=lane workspace + pairwise bundles in shared
-    //> 3=tile (one pairwise tile + W working grids)
+    //> 0=none, 1=lane, 2=bundles, 3=tile(+scratch cut), 4=filter-bundles, 5=tile-nocut
     int warp_smem_mode = 0;
     int warp_warps_per_block = 0;    // equals request unless --chain-smem-mode auto reduces it
-    int tile_workspaces = 0;         // W for --chain-smem-mode tile
+    int tile_workspaces = 0;         // W for --chain-smem-mode tile / tile-nocut
     size_t warp_smem_bytes = 0;
 
     unsigned *dev_edge_chain_final = nullptr;   // max_curvelets * chain_width

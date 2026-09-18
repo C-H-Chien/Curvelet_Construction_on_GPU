@@ -34,7 +34,7 @@ struct CurveletParams {
     int bundle_warps_per_block = 1;
 
     //> Parameters for the edge chain growth
-    int chain_warps_per_block = 2; //> TODO: tune this parameter
+    int chain_warps_per_block = 1; //> TODO: tune this parameter
     //> Shared-memory cache for warp growth: auto | none | lane | bundles
     //> auto    = prefer lane+bundles, then lane-only (may reduce warps/block)
     //> none    = no shared cache (mode 0); keep requested warps/block
@@ -83,9 +83,9 @@ inline void print_usage(const char *prog)
         << "  --fixed-row-build <mode>   Fixed-row build: warp | stage (default: warp)\n"
         << "  --neighbor-warps-per-block <N>  Warp-per-anchor discover: warps/block (default: 1)\n"
         << "  --bundle-warps-per-block <N>  Pairwise bundle formation: warps/block (default: 4)\n"
-        << "  --chain-warps-per-block <N>  Warp-per-anchor chain growth: warps/block (default: 2)\n"
-        << "  --chain-smem-mode <mode>   Warp shared cache: auto | none | lane | bundles | tile (default: auto)\n"
-        << "  --chain-tile-workspaces <N>  Working grids per warp in tile mode (default: 8, max 32)\n"
+        << "  --chain-warps-per-block <N>  Warp-per-anchor chain growth: warps/block (default: 1)\n"
+        << "  --chain-smem-mode <mode>   Warp shared cache: auto | none | lane | bundles | filter-bundles | tile-nocut | tile (default: auto)\n"
+        << "  --chain-tile-workspaces <N>  Working grids per warp in tile / tile-nocut (default: 8, max 32)\n"
         << "  --dedup-threads-per-block <N>  Deduplication threads/block (default: 128)\n"
         << "  --max-candidates <N>       Max neighbors staged per anchor (default: 64)\n"
         << "  --neighbor-count-threads <N>  Two-pass count kernel threads/block (default: 1)\n"

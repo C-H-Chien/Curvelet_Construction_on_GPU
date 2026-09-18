@@ -24,13 +24,37 @@ size_t warp_smem_floats_per_warp(int smem_mode, int bundle_cells, int slots_per_
     if (smem_mode == kWarpSmemLaneWs) {
         return lane_ws;
     }
-    if (smem_mode == kWarpSmemLaneWsAndBundles) {
+    if (smem_mode == kWarpSmemLaneWsAndBundles || smem_mode == kWarpSmemFilterBundles) {
         const size_t bundles = static_cast<size_t>(slots_per_anchor)
                              * static_cast<size_t>(2)
                              * static_cast<size_t>(bundle_cells);
         return bundles + lane_ws;
     }
     return 0;
+}
+
+size_t warp_smem_bytes_for_mode(
+    int smem_mode,
+    int bundle_cells,
+    int slots_per_anchor,
+    int warps_per_block,
+    int tile_workspaces)
+{
+    if (smem_mode == kWarpSmemTile || smem_mode == kWarpSmemTileNoCut) {
+        const size_t floats_per_warp =
+            static_cast<size_t>(tile_workspaces + 1) * static_cast<size_t>(2) * static_cast<size_t>(bundle_cells);
+        return static_cast<size_t>(warps_per_block) * floats_per_warp * sizeof(float)
+             + static_cast<size_t>(warps_per_block) * static_cast<size_t>(slots_per_anchor) * sizeof(int);
+    }
+    if (smem_mode == kWarpSmemFilterBundles) {
+        const size_t floats = warp_smem_floats_per_warp(smem_mode, bundle_cells, slots_per_anchor)
+                            * static_cast<size_t>(warps_per_block);
+        return floats * sizeof(float)
+             + static_cast<size_t>(warps_per_block) * static_cast<size_t>(slots_per_anchor) * sizeof(int);
+    }
+    const size_t floats = warp_smem_floats_per_warp(smem_mode, bundle_cells, slots_per_anchor)
+                        * static_cast<size_t>(warps_per_block);
+    return floats * sizeof(float);
 }
 
 //> Check the largest available dynamic shared memory per thread-block
@@ -54,11 +78,13 @@ bool query_max_dynamic_shared_bytes(size_t &max_dyn_bytes)
 //> Optionally cache per-lane growth workspaces and/or pairwise bundles in shared memory.
 //>
 //> chain_smem_mode:
-//>   "auto"    — prefer lane+bundles, then lane-only; may reduce warps/block
-//>   "none"    — mode 0; keep requested warps/block
-//>   "lane"    — mode 1; keep requested warps/block (fail if too large)
-//>   "bundles" — mode 2; keep requested warps/block (fail if too large)
-//>   "tile"    — mode 3; one pairwise tile + W working grids; warp grow only
+//>   "auto"           — prefer lane+bundles, then lane-only; may reduce warps/block
+//>   "none"           — mode 0; keep requested warps/block
+//>   "lane"           — mode 1; keep requested warps/block (fail if too large)
+//>   "bundles"        — mode 2; keep requested warps/block (fail if too large)
+//>   "tile"           — mode 3; streamed tile + W workspaces + scratch cut
+//>   "filter-bundles" — mode 4; active-slot filter + active bundle cache (full scratch)
+//>   "tile-nocut"     — mode 5; streamed tile + W workspaces, full scratch (no cut)
 bool choose_warp_smem_config(
     int bundle_cells,
     int slots_per_anchor,
@@ -89,7 +115,7 @@ bool choose_warp_smem_config(
         return true;
     }
 
-    if (chain_smem_mode == "tile") {
+    auto configure_tile_like = [&](const char *mode_name, int mode_id, void *kernel) -> bool {
         if (tile_workspaces < 1 || tile_workspaces > 32) {
             fprintf(stderr,
                     "choose_warp_smem_config: --chain-tile-workspaces=%d (use 1..32)\n",
@@ -101,26 +127,33 @@ bool choose_warp_smem_config(
             fprintf(stderr, "choose_warp_smem_config: could not query device shared-memory limit\n");
             return false;
         }
-        cudacheck(cudaFuncSetAttribute(grow_edge_chains_tile_kernel,
+        cudacheck(cudaFuncSetAttribute(kernel,
                                        cudaFuncAttributeMaxDynamicSharedMemorySize,
                                        static_cast<int>(max_dyn_bytes)));
-        const size_t floats_per_warp =
-            static_cast<size_t>(tile_workspaces + 1) * static_cast<size_t>(2) * static_cast<size_t>(bundle_cells);
-        const size_t bytes = static_cast<size_t>(requested_warps_per_block) * floats_per_warp * sizeof(float)
-                           + static_cast<size_t>(requested_warps_per_block) * static_cast<size_t>(slots_per_anchor) * sizeof(int);
+        const size_t bytes = warp_smem_bytes_for_mode(
+            mode_id, bundle_cells, slots_per_anchor, requested_warps_per_block, tile_workspaces);
         if (bytes > max_dyn_bytes) {
             fprintf(stderr,
-                    "choose_warp_smem_config: --chain-smem-mode=tile needs %zu bytes "
+                    "choose_warp_smem_config: --chain-smem-mode=%s needs %zu bytes "
                     "(%d workspaces, %d warps/block) but device max dynamic shared is %zu bytes; "
                     "lower --chain-tile-workspaces or --chain-warps-per-block\n",
-                    bytes, tile_workspaces, requested_warps_per_block, max_dyn_bytes);
+                    mode_name, bytes, tile_workspaces, requested_warps_per_block, max_dyn_bytes);
             return false;
         }
-        smem_mode = kWarpSmemTile;
+        smem_mode = mode_id;
         warps_per_block = requested_warps_per_block;
         smem_bytes = bytes;
         out_tile_workspaces = tile_workspaces;
         return true;
+    };
+
+    if (chain_smem_mode == "tile") {
+        return configure_tile_like("tile", kWarpSmemTile,
+                                   reinterpret_cast<void *>(grow_edge_chains_tile_kernel));
+    }
+    if (chain_smem_mode == "tile-nocut") {
+        return configure_tile_like("tile-nocut", kWarpSmemTileNoCut,
+                                   reinterpret_cast<void *>(grow_edge_chains_tile_nocut_kernel));
     }
 
     size_t max_dyn_bytes = 0;
@@ -132,6 +165,27 @@ bool choose_warp_smem_config(
         return false;
     }
 
+    if (chain_smem_mode == "filter-bundles") {
+        cudacheck(cudaFuncSetAttribute(grow_edge_chains_filter_bundles_kernel,
+                                       cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                       static_cast<int>(max_dyn_bytes)));
+        const size_t bytes = warp_smem_bytes_for_mode(
+            kWarpSmemFilterBundles, bundle_cells, slots_per_anchor,
+            requested_warps_per_block, tile_workspaces);
+        if (bytes > max_dyn_bytes) {
+            fprintf(stderr,
+                    "choose_warp_smem_config: --chain-smem-mode=filter-bundles needs %zu bytes "
+                    "(%d warps/block) but device max dynamic shared is %zu bytes; "
+                    "lower --chain-warps-per-block\n",
+                    bytes, requested_warps_per_block, max_dyn_bytes);
+            return false;
+        }
+        smem_mode = kWarpSmemFilterBundles;
+        warps_per_block = requested_warps_per_block;
+        smem_bytes = bytes;
+        return true;
+    }
+
     //> Request max dynamic shared memory on the kernel that will actually launch
     cudacheck(cudaFuncSetAttribute(grow_edge_chains_warp_kernel,
                                    cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -140,9 +194,9 @@ bool choose_warp_smem_config(
     const char *grow_label = "grow_edge_chains_warp";
 
     auto try_mode = [&](int mode, int warps) -> bool {
-        const size_t per_warp = warp_smem_floats_per_warp(mode, bundle_cells, slots_per_anchor);
-        const size_t bytes = per_warp * static_cast<size_t>(warps) * sizeof(float);
-        if (per_warp == 0 || bytes > max_dyn_bytes) {
+        const size_t bytes = warp_smem_bytes_for_mode(
+            mode, bundle_cells, slots_per_anchor, warps, tile_workspaces);
+        if (bytes == 0 || bytes > max_dyn_bytes) {
             return false;
         }
         smem_mode = mode;
@@ -152,8 +206,8 @@ bool choose_warp_smem_config(
     };
 
     auto fail_manual = [&](int mode) -> bool {
-        const size_t per_warp = warp_smem_floats_per_warp(mode, bundle_cells, slots_per_anchor);
-        const size_t need = per_warp * static_cast<size_t>(requested_warps_per_block) * sizeof(float);
+        const size_t need = warp_smem_bytes_for_mode(
+            mode, bundle_cells, slots_per_anchor, requested_warps_per_block, tile_workspaces);
         fprintf(stderr,
                 "choose_warp_smem_config: --chain-smem-mode=%s needs %zu bytes "
                 "(%d warps/block) but device max dynamic shared is %zu bytes; "
@@ -221,7 +275,8 @@ void compute_scratch_sizes(
         floats_per_anchor = static_cast<size_t>(4) * static_cast<size_t>(slots_per_anchor);
     }
     else {
-        //> Warp path: per-seed final working min/max for forward and backward growth directions
+        //> Full working min/max for forward and backward growth directions
+        //> (bundles / filter-bundles / tile-nocut / lane / none)
         floats_per_anchor = static_cast<size_t>(4) * static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(bundle_cells);
         //> Lane workspaces stay in global memory only when shared caching is unavailable
         if (smem_mode == kWarpSmemNone) {
@@ -245,11 +300,10 @@ void launch_grow_edge_chains_warp(
         return;
     }
 
-    const bool tile = (storage.warp_smem_mode == kWarpSmemTile);
     const int grow_threads_per_block = warps_per_block * 32;
     const int grow_num_blocks = div_up(graph.num_edges, warps_per_block);
 
-    if (tile) {
+    if (storage.warp_smem_mode == kWarpSmemTile) {
         grow_edge_chains_tile_kernel<<<grow_num_blocks, grow_threads_per_block, storage.warp_smem_bytes>>>(
             graph.num_edges,
             storage.slots_per_anchor,
@@ -263,6 +317,47 @@ void launch_grow_edge_chains_warp(
             static_cast<float>(params.st),
             warps_per_block,
             storage.tile_workspaces,
+            storage.scratch_floats_per_anchor,
+            storage.scratch_uints_per_anchor,
+            graph.dev_edges,
+            graph.dev_neighbor_list,
+            graph.dev_neighbor_counts,
+            bundles.dev_bundle_min_ks,
+            bundles.dev_bundle_max_ks,
+            bundles.dev_hyp_look_edge,
+            storage.dev_scratch_f,
+            storage.dev_scratch_u);
+    }
+    else if (storage.warp_smem_mode == kWarpSmemTileNoCut) {
+        grow_edge_chains_tile_nocut_kernel<<<grow_num_blocks, grow_threads_per_block, storage.warp_smem_bytes>>>(
+            graph.num_edges,
+            storage.slots_per_anchor,
+            storage.bundle_cells,
+            storage.group_max_sz,
+            storage.chain_width,
+            params.edge_data_sz,
+            warps_per_block,
+            storage.tile_workspaces,
+            storage.scratch_floats_per_anchor,
+            storage.scratch_uints_per_anchor,
+            graph.dev_edges,
+            graph.dev_neighbor_list,
+            graph.dev_neighbor_counts,
+            bundles.dev_bundle_min_ks,
+            bundles.dev_bundle_max_ks,
+            bundles.dev_hyp_look_edge,
+            storage.dev_scratch_f,
+            storage.dev_scratch_u);
+    }
+    else if (storage.warp_smem_mode == kWarpSmemFilterBundles) {
+        grow_edge_chains_filter_bundles_kernel<<<grow_num_blocks, grow_threads_per_block, storage.warp_smem_bytes>>>(
+            graph.num_edges,
+            storage.slots_per_anchor,
+            storage.bundle_cells,
+            storage.group_max_sz,
+            storage.chain_width,
+            params.edge_data_sz,
+            warps_per_block,
             storage.scratch_floats_per_anchor,
             storage.scratch_uints_per_anchor,
             graph.dev_edges,
@@ -475,6 +570,12 @@ bool gpu_grow_edge_chains_main(
     cudacheck(cudaDeviceSynchronize());
     if (storage.warp_smem_mode == kWarpSmemTile) {
         profile_lap(profiler, TimerCategory::Kernel, "grow_edge_chains_tile (phase 1)");
+    }
+    else if (storage.warp_smem_mode == kWarpSmemTileNoCut) {
+        profile_lap(profiler, TimerCategory::Kernel, "grow_edge_chains_tile_nocut (phase 1)");
+    }
+    else if (storage.warp_smem_mode == kWarpSmemFilterBundles) {
+        profile_lap(profiler, TimerCategory::Kernel, "grow_edge_chains_filter_bundles (phase 1)");
     }
     else {
         profile_lap(profiler, TimerCategory::Kernel, "grow_edge_chains_warp (phase 1)");
