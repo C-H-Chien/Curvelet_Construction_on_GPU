@@ -23,8 +23,10 @@ struct GPUCurveletChainStorage {
 
     //> Warp growth shared-memory plan (set at allocate / launch time)
     //> 0=none, 1=lane workspace in shared, 2=lane workspace + pairwise bundles in shared
+    //> 3=tile (one pairwise tile + W working grids)
     int warp_smem_mode = 0;
     int warp_warps_per_block = 0;    // equals request unless --chain-smem-mode auto reduces it
+    int tile_workspaces = 0;         // W for --chain-smem-mode tile
     size_t warp_smem_bytes = 0;
 
     unsigned *dev_edge_chain_final = nullptr;   // max_curvelets * chain_width
@@ -44,13 +46,15 @@ bool gpu_allocate_edge_chains(
     int group_max_sz,
     int chain_warps_per_block,
     const std::string &chain_smem_mode,
+    int chain_tile_workspaces,
     GPUCurveletChainStorage &storage);
 
 void gpu_curvelet_free_chains(GPUCurveletChainStorage &storage);
 
 //> Grow edge chains by cumulative curve-bundle intersection (style-2: anchor-leading, both directions).
-//> Direction filtering is applied here against pairwise hyp flags from bundle formation.
-//> Uses warp-per-anchor growth (phase 1) then thread-per-anchor dedup/record (phase 2).
+//> Direction filtering is applied inline against pairwise hyp flags from bundle formation.
+//> Phase 1: warp-per-anchor growth (bundles cache or streamed tile).
+//> Phase 2: thread-per-anchor dedup/record.
 bool gpu_grow_edge_chains_main(
     const CurveletParams &params,
     const GPUNeighborGraph &graph,
