@@ -12,6 +12,68 @@ slot_active_for_run(int f_run, float along)
     return (f_run == 0) ? (along > 0.f) : (along < 0.f);
 }
 
+//> Warp-cooperative load of one pairwise min/max grid. All lanes must call this.
+__device__ __forceinline__ void
+coop_load_pairwise_bundle(
+    int slot,
+    int bundle_cells,
+    int lane,
+    const float *src_min,
+    const float *src_max,
+    float *tile_min,
+    float *tile_max)
+{
+    const float *smin = src_min + static_cast<size_t>(slot) * static_cast<size_t>(bundle_cells);
+    const float *smax = src_max + static_cast<size_t>(slot) * static_cast<size_t>(bundle_cells);
+    for (int i = lane; i < bundle_cells; i += 32) {
+        tile_min[i] = smin[i];
+        tile_max[i] = smax[i];
+    }
+}
+
+__device__ __forceinline__ float
+neighbor_along_anchor(
+    int neighbor_id,
+    int sz_edge_data,
+    float anchor_edge_x,
+    float anchor_edge_y,
+    float anchor_cos,
+    float anchor_sin,
+    const float *dev_edges)
+{
+    const float *nbr = dev_edges + neighbor_id * sz_edge_data;
+    return (nbr[0] - anchor_edge_x) * anchor_cos + (nbr[1] - anchor_edge_y) * anchor_sin;
+}
+
+__device__ __forceinline__ bool
+neighbor_slot_passes_grow_filter(
+    int f_run,
+    int slot,
+    int row_base,
+    int sz_edge_data,
+    float anchor_edge_x,
+    float anchor_edge_y,
+    float anchor_cos,
+    float anchor_sin,
+    const float *dev_edges,
+    const int *dev_neighbor_list,
+    const unsigned char *dev_is_bundle_geometrically_valid)
+{
+    const int neighbor_id = dev_neighbor_list[row_base + slot];
+    if (neighbor_id < 0) {
+        return false;
+    }
+    if (!dev_is_bundle_geometrically_valid[static_cast<size_t>(row_base) + static_cast<size_t>(slot)]) {
+        return false;
+    }
+    const float along = neighbor_along_anchor(
+        neighbor_id, sz_edge_data,
+        anchor_edge_x, anchor_edge_y, anchor_cos, anchor_sin,
+        dev_edges);
+    return slot_active_for_run(f_run, along);
+}
+
+
 __device__ __forceinline__ bool
 check_curvelet_exist(
     int chain_sz,
@@ -89,15 +151,13 @@ intersect_working_with_candidate(
 }
 
 __device__ __forceinline__ void
-fill_curvelet_info_row(
-    float *info_row,
-    bool forward,
+select_best_bundle_ks(
     float sx, float st,
     int curves_num_in_bundle_pixel, int curves_num_in_bundle_theta,
-    const float *cmp_bundle_min_ks, const float *cmp_bundle_max_ks)
+    const float *cmp_bundle_min_ks, const float *cmp_bundle_max_ks,
+    float &k_max, float &k_min)
 {
-    //> Pick the valid (dx, dtheta) cell closest to the origin in the working bundle,
-    //> then store only forward / k_max / k_min for that cell.
+    //> Valid (dx, dtheta) cell closest to the origin which mimics the original code
     float mind = 100.f;
     int mini = 0;
     int minj = 0;
@@ -116,21 +176,37 @@ fill_curvelet_info_row(
             }
         }
     }
-
     const int best_bidx = mini * curves_num_in_bundle_theta + minj;
-    info_row[0] = forward ? 1.f : 0.f;
-    info_row[1] = cmp_bundle_max_ks[best_bidx];
-    info_row[2] = cmp_bundle_min_ks[best_bidx];
+    k_max = cmp_bundle_max_ks[best_bidx];
+    k_min = cmp_bundle_min_ks[best_bidx];
+}
 
-    // const float k_max = cmp_bundle_max_ks[best_bidx];
-    // const float k_min = cmp_bundle_min_ks[best_bidx];
+__device__ __forceinline__ void
+fill_curvelet_info_row(
+    float *info_row,
+    bool forward,
+    float sx, float st,
+    int curves_num_in_bundle_pixel, int curves_num_in_bundle_theta,
+    const float *cmp_bundle_min_ks, const float *cmp_bundle_max_ks)
+{
+    //> Pick the valid (dx, dtheta) cell closest to the origin in the working bundle,
+    //> then store only forward / k_max / k_min for that cell.
+    float k_max = 0.f;
+    float k_min = 0.f;
+    select_best_bundle_ks(
+        sx, st, curves_num_in_bundle_pixel, curves_num_in_bundle_theta,
+        cmp_bundle_min_ks, cmp_bundle_max_ks, k_max, k_min);
+    info_row[0] = forward ? 1.f : 0.f;
+    info_row[1] = k_max;
+    info_row[2] = k_min;
+
     // const float k = 0.5f * (k_max + k_min);
     // const float dx = sx * (static_cast<float>(mini) - (static_cast<float>(curves_num_in_bundle_pixel) - 1.f) / 2.f);
     // const float dt = st * (static_cast<float>(minj) - (static_cast<float>(curves_num_in_bundle_theta) - 1.f) / 2.f);
     // const float theta = To2Pi(ref_theta + dt);
     // const float pt_x = ref_pt_x - dx * sinf(theta);
     // const float pt_y = ref_pt_y + dx * cosf(theta);
-
+    //
     // float length = 0.f;
     // for (int i = 0; i + 1 < chain_sz; i++) {
     //     const int e1 = static_cast<int>(chain[i]);
@@ -143,14 +219,12 @@ fill_curvelet_info_row(
     //     const float ddy = y1 - y2;
     //     length += sqrtf(ddx * ddx + ddy * ddy);
     // }
-
+    //
     // const float alpha3 = 1.f;
     // const float alpha4 = 1.f;
     // const float quality = (length > 0.f && chain_sz > 0)
     //     ? 2.f / (alpha3 * nrad / length + alpha4 * length / static_cast<float>(chain_sz))
     //     : 0.f;
-    // info_row[1] = k_max;
-    // info_row[2] = k_min;
     // info_row[3] = ref_theta;
     // info_row[4] = pt_x;
     // info_row[5] = pt_y;
@@ -200,9 +274,11 @@ grow_seed_init(
     if (!dev_is_bundle_geometrically_valid[hyp_idx]) {
         return false;
     }
-    const float *nbr = dev_edges + neighbor_id * sz_edge_data;
-    const float dir = (nbr[0] - anchor_edge_x) * anchor_cos + (nbr[1] - anchor_edge_y) * anchor_sin;
-    if (!slot_active_for_run(f_run, dir)) {
+    const float along = neighbor_along_anchor(
+        neighbor_id, sz_edge_data,
+        anchor_edge_x, anchor_edge_y, anchor_cos, anchor_sin,
+        dev_edges);
+    if (!slot_active_for_run(f_run, along)) {
         return false;
     }
 
@@ -252,9 +328,11 @@ grow_seed_consider_neighbor(
     }
 
     //> Directional filter: check if the remaining neighbor is active for the current run (f_run == 0: forward, f_run == 1: backward)
-    const float *nbr = dev_edges + remain_id * sz_edge_data;
-    const float dir = (nbr[0] - anchor_edge_x) * anchor_cos + (nbr[1] - anchor_edge_y) * anchor_sin;
-    if (!slot_active_for_run(f_run, dir)) {
+    const float along = neighbor_along_anchor(
+        remain_id, sz_edge_data,
+        anchor_edge_x, anchor_edge_y, anchor_cos, anchor_sin,
+        dev_edges);
+    if (!slot_active_for_run(f_run, along)) {
         return false;
     }
 
@@ -312,10 +390,8 @@ grow_seed_chain(
 
     //> Neighbors are already in ascending distance to the anchor
     for (int neighbor_remain_idx = 0; neighbor_remain_idx < num_of_neighbors; neighbor_remain_idx++) {
-        const float *cand_min = anchor_bundle_min +
-            static_cast<size_t>(neighbor_remain_idx) * static_cast<size_t>(bundle_cells);
-        const float *cand_max = anchor_bundle_max +
-            static_cast<size_t>(neighbor_remain_idx) * static_cast<size_t>(bundle_cells);
+        const float *cand_min = anchor_bundle_min + static_cast<size_t>(neighbor_remain_idx) * static_cast<size_t>(bundle_cells);
+        const float *cand_max = anchor_bundle_max + static_cast<size_t>(neighbor_remain_idx) * static_cast<size_t>(bundle_cells);
 
         if (grow_seed_consider_neighbor(
                 f_run, seed_idx, neighbor_remain_idx, row_base,
@@ -368,6 +444,45 @@ record_accepted_chain(
         sx, st,
         curves_num_in_bundle_pixel, curves_num_in_bundle_theta,
         working_min_ks, working_max_ks);
+
+    (void)group_max_sz;
+}
+
+//> Tile growth path: phase 1 already reduced the working grid to k_max/k_min.
+__device__ __forceinline__ void
+record_accepted_chain(
+    unsigned anchor_id,
+    int f_run,
+    int chain_sz,
+    const unsigned *chain,
+    int group_max_sz,
+    int chain_width,
+    int max_per_anchor,
+    float k_max, float k_min,
+    unsigned *dev_edge_chain_final,
+    unsigned *anchor_count,
+    float *dev_curvelet_info)
+{
+    if (*anchor_count >= static_cast<unsigned>(max_per_anchor)) {
+        return;
+    }
+
+    const unsigned row = static_cast<unsigned>(anchor_id) * static_cast<unsigned>(max_per_anchor) + (*anchor_count);
+    (*anchor_count)++;
+
+    unsigned *out_row = dev_edge_chain_final + static_cast<size_t>(row) * static_cast<size_t>(chain_width);
+    for (int j = 0; j < chain_width; j++) {
+        out_row[j] = 0;
+    }
+    out_row[0] = anchor_id + 1u;
+    for (int i = 0; i < chain_sz && (i + 1) < chain_width; i++) {
+        out_row[i + 1] = chain[i] + 1u;
+    }
+
+    float *info_row = dev_curvelet_info + static_cast<size_t>(row) * 10u;
+    info_row[0] = (f_run == 0) ? 1.f : 0.f;
+    info_row[1] = k_max;
+    info_row[2] = k_min;
 
     (void)group_max_sz;
 }

@@ -19,6 +19,16 @@ struct CPUCurveletFormationResult {
     unsigned valid_pairs = 0;
 };
 
+//> Phase timings from build_curvelets_greedy (max over OpenMP threads ≈ parallel wall).
+struct CPUCurveletBuildTiming {
+    double wall_s = 0.0;
+    double direction_filter_s = 0.0;
+    double bundle_transport_s = 0.0;
+    double chain_growth_s = 0.0;
+    double dedup_s = 0.0;
+    int threads_used = 1;
+};
+
 template<typename T>
 class CurveletCPU
 {
@@ -100,7 +110,7 @@ public:
 
     void curvelet_preprocessing(T* bundle_min_ks, T* bundle_max_ks, bool* hyp_LookEdge, unsigned* edge_chain_on_the_fly, unsigned* edge_chain_target);
     bool form_pairwise_bundles(CPUCurveletFormationResult &result);
-    void build_curvelets_greedy();
+    void build_curvelets_greedy(CPUCurveletBuildTiming *timing_out = nullptr);
     void compact_curvelet_output();
     bool compute_curve_bundle( unsigned te_idx, unsigned le_idx, T* bundle_min_ks, T* bundle_max_ks, bool* hyp_LookEdg, 
                                T te_pt_x, T te_pt_y, T le_pt_x, T le_pt_y, T te_orient, T le_orient );
@@ -361,7 +371,7 @@ bool CurveletCPU<T>::form_pairwise_bundles(CPUCurveletFormationResult &result)
 }
 
 template<typename T>
-void CurveletCPU<T>::build_curvelets_greedy( )
+void CurveletCPU<T>::build_curvelets_greedy(CPUCurveletBuildTiming *timing_out)
 {
     _num_curvelets = 0;
     for (int i = 0; i < _num_edges; i++) {
@@ -631,6 +641,15 @@ void CurveletCPU<T>::build_curvelets_greedy( )
     std::cout<<"-   chain growth by bundle intersection (phase 1): "<<time_chain_growth*1000<<" (ms)" << "  ["<<(100.0*time_chain_growth/phase_ref)<<"% of wall]"<<std::endl;
     std::cout<<"-   curvelet dedup + record (phase 2): "<<time_dedup*1000<<" (ms)" << "  [" << (100.0*time_dedup/phase_ref)<<"% of wall]"<<std::endl;
     std::cout<<"- Number of curvelets formed: "<<_num_curvelets<<std::endl;
+
+    if (timing_out != nullptr) {
+        timing_out->wall_s = curvelet_build_time;
+        timing_out->direction_filter_s = time_direction_filter;
+        timing_out->bundle_transport_s = time_bundle_transport;
+        timing_out->chain_growth_s = time_chain_growth;
+        timing_out->dedup_s = time_dedup;
+        timing_out->threads_used = threads_used;
+    }
 }
 
 //> compute the max and min curvature of the curve bundle from a pair of edges

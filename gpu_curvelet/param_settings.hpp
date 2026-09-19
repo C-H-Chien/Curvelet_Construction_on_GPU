@@ -34,13 +34,15 @@ struct CurveletParams {
     int bundle_warps_per_block = 1;
 
     //> Parameters for the edge chain growth
-    int chain_warps_per_block = 2; //> TODO: tune this parameter
+    int chain_warps_per_block = 1; //> TODO: tune this parameter
     //> Shared-memory cache for warp growth: auto | none | lane | bundles
     //> auto    = prefer lane+bundles, then lane-only (may reduce warps/block)
     //> none    = no shared cache (mode 0); keep requested warps/block
     //> lane    = per-lane growth workspace in shared (mode 1); keep requested warps/block
     //> bundles = lane workspace + pairwise bundles in shared (mode 2); keep requested warps/block
+    //> tile    = one cooperatively loaded pairwise tile + W working grids (mode 3)
     std::string chain_smem_mode = "auto";
+    int chain_tile_workspaces = 8;
     int dedup_threads_per_block = 128;
 
     //> Input edge file
@@ -81,8 +83,9 @@ inline void print_usage(const char *prog)
         << "  --fixed-row-build <mode>   Fixed-row build: warp | stage (default: warp)\n"
         << "  --neighbor-warps-per-block <N>  Warp-per-anchor discover: warps/block (default: 1)\n"
         << "  --bundle-warps-per-block <N>  Pairwise bundle formation: warps/block (default: 4)\n"
-        << "  --chain-warps-per-block <N>  Warp-per-anchor chain growth: warps/block (default: 2)\n"
-        << "  --chain-smem-mode <mode>   Warp shared cache: auto | none | lane | bundles (default: auto)\n"
+        << "  --chain-warps-per-block <N>  Warp-per-anchor chain growth: warps/block (default: 1)\n"
+        << "  --chain-smem-mode <mode>   Warp shared cache: auto | none | lane | bundles | tile-nocut | tile (default: auto)\n"
+        << "  --chain-tile-workspaces <N>  Working grids per warp in tile / tile-nocut (default: 8, max 32)\n"
         << "  --dedup-threads-per-block <N>  Deduplication threads/block (default: 128)\n"
         << "  --max-candidates <N>       Max neighbors staged per anchor (default: 64)\n"
         << "  --neighbor-count-threads <N>  Two-pass count kernel threads/block (default: 1)\n"
@@ -91,6 +94,8 @@ inline void print_usage(const char *prog)
         << "  --edge-data-sz <N>         Values per edge in input file (default: 4)\n"
         << "  --timing-csv <file>        Append one summary timing row per run (CSV)\n"
         << "  --timing-detail-csv <file> Append per-step timing rows per run (CSV)\n"
+        << "  --neighbor-degree-csv <file>  Write per-anchor neighbor counts (CSV)\n"
+        << "  --neighbor-degree-only     Stop after neighbor graph + degree CSV (skip bundle/chain)\n"
         << "  --help                     Show this help message\n";
 }
 
@@ -133,9 +138,12 @@ inline bool parse_double_arg(const char *arg, const char *name, double &value)
 inline bool parse_args(int argc, char **argv, CurveletParams &params,
                        std::string &out_file, int &gpu_id,
                        std::string &timing_csv, std::string &timing_detail_csv,
+                       std::string &neighbor_degree_csv,
+                       bool &neighbor_degree_only,
                        bool &show_help)
 {
     show_help = false;
+    neighbor_degree_only = false;
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
         if (std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0) {
@@ -151,6 +159,12 @@ inline bool parse_args(int argc, char **argv, CurveletParams &params,
         }
         else if (std::strcmp(arg, "--timing-detail-csv") == 0 && i + 1 < argc) {
             timing_detail_csv = argv[++i];
+        }
+        else if (std::strcmp(arg, "--neighbor-degree-csv") == 0 && i + 1 < argc) {
+            neighbor_degree_csv = argv[++i];
+        }
+        else if (std::strcmp(arg, "--neighbor-degree-only") == 0) {
+            neighbor_degree_only = true;
         }
         else if (std::strcmp(arg, "--device") == 0 && i + 1 < argc) {
             if (!parse_int_arg(argv[++i], "--device", gpu_id)) return false;
@@ -208,6 +222,9 @@ inline bool parse_args(int argc, char **argv, CurveletParams &params,
         }
         else if (std::strcmp(arg, "--chain-smem-mode") == 0 && i + 1 < argc) {
             params.chain_smem_mode = argv[++i];
+        }
+        else if (std::strcmp(arg, "--chain-tile-workspaces") == 0 && i + 1 < argc) {
+            if (!parse_int_arg(argv[++i], "--chain-tile-workspaces", params.chain_tile_workspaces)) return false;
         }
         else if (std::strcmp(arg, "--dedup-threads-per-block") == 0 && i + 1 < argc) {
             if (!parse_int_arg(argv[++i], "--dedup-threads-per-block", params.dedup_threads_per_block)) return false;

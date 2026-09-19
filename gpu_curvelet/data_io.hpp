@@ -144,4 +144,60 @@ inline std::string chain_to_info_filename(const std::string &chain_file)
     return "info_" + chain_file;
 }
 
+//> Write one row per anchor: anchor_id,num_neighbors
+inline bool write_neighbor_degree_csv(const std::string &path, const int *counts, int num_edges)
+{
+    if (counts == nullptr || num_edges < 0) {
+        std::cerr << "write_neighbor_degree_csv: invalid counts/num_edges\n";
+        return false;
+    }
+
+    const std::filesystem::path out_path(path);
+    if (out_path.has_parent_path()) {
+        std::error_code ec;
+        std::filesystem::create_directories(out_path.parent_path(), ec);
+        if (ec) {
+            std::cerr << "Failed to create directory for " << path << ": " << ec.message() << std::endl;
+            return false;
+        }
+    }
+
+    std::ofstream out(path);
+    if (!out.is_open()) {
+        std::cerr << "write_neighbor_degree_csv: cannot open " << path << std::endl;
+        return false;
+    }
+
+    out << "anchor_id,num_neighbors\n";
+    long long sum = 0;
+    int max_deg = 0;
+    int at_most_16 = 0;
+    int above_16 = 0;
+    for (int i = 0; i < num_edges; i++) {
+        const int d = counts[i];
+        out << i << ',' << d << '\n';
+        sum += d;
+        if (d > max_deg) {
+            max_deg = d;
+        }
+        if (d <= 16) {
+            at_most_16++;
+        } else {
+            above_16++;
+        }
+    }
+
+    const double mean = (num_edges > 0) ? static_cast<double>(sum) / static_cast<double>(num_edges) : 0.0;
+    const double pct_le16 = (num_edges > 0)
+        ? 100.0 * static_cast<double>(at_most_16) / static_cast<double>(num_edges) : 0.0;
+    std::cout << "Neighbor degree CSV: " << path << "\n"
+              << "  anchors=" << num_edges
+              << " mean=" << mean
+              << " max=" << max_deg
+              << " <=16: " << at_most_16 << " (" << pct_le16 << "%)"
+              << " >16: " << above_16
+              << std::endl;
+    return true;
+}
+
 #endif

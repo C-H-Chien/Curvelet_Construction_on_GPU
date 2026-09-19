@@ -194,7 +194,8 @@ double detail_seconds_containing(const CategoryProfiler &p, const char *needle)
 } // namespace
 
 bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, CurveletParams &params,
-                      const std::string &timing_csv, const std::string &timing_detail_csv)
+                      const std::string &timing_csv, const std::string &timing_detail_csv,
+                      const std::string &neighbor_degree_csv, bool neighbor_degree_only)
 {
     const unsigned curvelet_style = params.curvelet_style;
     const unsigned out_type = params.out_type;
@@ -203,9 +204,19 @@ bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, CurveletPar
     const int edge_data_sz = params.edge_data_sz;
 
     if (params.chain_smem_mode != "auto" && params.chain_smem_mode != "none" &&
-        params.chain_smem_mode != "lane" && params.chain_smem_mode != "bundles") {
-        std::cerr << "Warning: unknown --chain-smem-mode '" << params.chain_smem_mode << "', using auto (expected: auto/none/lane/bundles)\n";
+        params.chain_smem_mode != "lane" && params.chain_smem_mode != "bundles" &&
+        params.chain_smem_mode != "tile-nocut" &&
+        params.chain_smem_mode != "tile") {
+        std::cerr << "Warning: unknown --chain-smem-mode '" << params.chain_smem_mode
+                  << "', using auto (expected: auto/none/lane/bundles/tile-nocut/tile)\n";
         params.chain_smem_mode = "auto";
+    }
+    if (params.chain_smem_mode == "tile" || params.chain_smem_mode == "tile-nocut") {
+        if (params.chain_tile_workspaces < 1 || params.chain_tile_workspaces > 32) {
+            std::cerr << "Error: --chain-tile-workspaces must be 1..32 (got "
+                      << params.chain_tile_workspaces << ")\n";
+            return false;
+        }
     }
 
     std::cout << "Using scalar type: float (GPU)" << std::endl;
@@ -262,8 +273,43 @@ bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, CurveletPar
     timing.total_neighbor_pairs = neighbor_graph.total_neighbor_pairs;
     timing.mean_neighbors = (edge_num > 0) ? static_cast<double>(neighbor_graph.total_neighbor_pairs) / static_cast<double>(edge_num) : 0.0;
 
+    if (!neighbor_degree_csv.empty()) {
+        if (neighbor_graph.dev_neighbor_counts == nullptr) {
+            std::cerr << "Cannot write --neighbor-degree-csv: neighbor counts not available\n";
+            gpu_preprocess_free(neighbor_graph);
+            return false;
+        }
+        std::vector<int> host_counts(static_cast<size_t>(edge_num));
+        cudacheck(cudaMemcpy(host_counts.data(), neighbor_graph.dev_neighbor_counts,
+                             static_cast<size_t>(edge_num) * sizeof(int), cudaMemcpyDeviceToHost));
+        if (!write_neighbor_degree_csv(neighbor_degree_csv, host_counts.data(), edge_num)) {
+            gpu_preprocess_free(neighbor_graph);
+            return false;
+        }
+    }
+
+    if (neighbor_degree_only && neighbor_degree_csv.empty()) {
+        std::cerr << "Error: --neighbor-degree-only requires --neighbor-degree-csv <file>\n";
+        return false;
+    }
+
     if (!timing_detail_csv.empty()) {
         profiler.append_detail_csv(timing_detail_csv, timing.run_id);
+    }
+
+    if (neighbor_degree_only) {
+        gpu_preprocess_free(neighbor_graph);
+        timing.wall_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_t0).count();
+        const std::string summary_line = timing_summary_row(timing);
+        std::cout << "\nTIMING_CSV " << summary_line << std::endl;
+        if (!append_timing_summary_csv(timing_csv, timing)) {
+            return false;
+        }
+        if (!timing_csv.empty()) {
+            std::cout << "Wrote timing summary row to " << timing_csv << std::endl;
+        }
+        std::cout << "Neighbor-degree-only run complete (bundle/chain skipped)." << std::endl;
+        return true;
     }
 
     if (neighbor_graph.layout == "fixed-row") {
@@ -318,7 +364,7 @@ bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, CurveletPar
                           timing.chain_mem_s,
                           timing.chain_xfer_s);
         timing.chain_grow_kernel_s =
-            detail_seconds_containing(chain_profiler, "grow_edge_chains_warp");
+            detail_seconds_containing(chain_profiler, "grow_edge_chains_");
         timing.chain_dedup_kernel_s =
             detail_seconds_containing(chain_profiler, "dedup_record_edge_chains");
         timing.num_curvelets = num_curvelets;
@@ -388,13 +434,17 @@ int main(int argc, char **argv)
     std::string out_file = "chain_gpu.txt";
     std::string timing_csv;
     std::string timing_detail_csv;
+    std::string neighbor_degree_csv;
+    bool neighbor_degree_only = false;
     CurveletParams params;
     bool show_help = false;
 
-    if (!parse_args(argc, argv, params, out_file, gpu_id, timing_csv, timing_detail_csv, show_help)) {
+    if (!parse_args(argc, argv, params, out_file, gpu_id, timing_csv, timing_detail_csv,
+                    neighbor_degree_csv, neighbor_degree_only, show_help)) {
         return show_help ? 0 : 1;
     }
 
-    const bool ok = run_curvelet_gpu(out_file, gpu_id, params, timing_csv, timing_detail_csv);
+    const bool ok = run_curvelet_gpu(out_file, gpu_id, params, timing_csv, timing_detail_csv,
+                                     neighbor_degree_csv, neighbor_degree_only);
     return ok ? 0 : 1;
 }
