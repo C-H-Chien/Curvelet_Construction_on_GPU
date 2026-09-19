@@ -205,10 +205,10 @@ bool run_curvelet_gpu(const std::string &out_chain_file, int gpu_id, CurveletPar
 
     if (params.chain_smem_mode != "auto" && params.chain_smem_mode != "none" &&
         params.chain_smem_mode != "lane" && params.chain_smem_mode != "bundles" &&
-        params.chain_smem_mode != "filter-bundles" && params.chain_smem_mode != "tile-nocut" &&
+        params.chain_smem_mode != "tile-nocut" &&
         params.chain_smem_mode != "tile") {
         std::cerr << "Warning: unknown --chain-smem-mode '" << params.chain_smem_mode
-                  << "', using auto (expected: auto/none/lane/bundles/filter-bundles/tile-nocut/tile)\n";
+                  << "', using auto (expected: auto/none/lane/bundles/tile-nocut/tile)\n";
         params.chain_smem_mode = "auto";
     }
     if (params.chain_smem_mode == "tile" || params.chain_smem_mode == "tile-nocut") {

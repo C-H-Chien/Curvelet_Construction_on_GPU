@@ -11,15 +11,13 @@
 //> 1 = lane workspaces in shared; pairwise bundles stay in global
 //> 2 = lane workspaces + per-anchor pairwise bundles in shared
 //> 3 = tile: one cooperatively loaded pairwise tile + W working grids (+ scratch cut)
-//> 4 = filter-bundles: active-slot filter + cache active pairwise bundles (no scratch cut)
-//> 5 = tile-nocut: active-slot filter + streamed tile waves (no scratch cut)
+//> 4 = tile-nocut: active-slot filter + streamed tile waves (no scratch cut)
 enum : int {
     kWarpSmemNone = 0,
     kWarpSmemLaneWs = 1,
     kWarpSmemLaneWsAndBundles = 2,
     kWarpSmemTile = 3,
-    kWarpSmemFilterBundles = 4,
-    kWarpSmemTileNoCut = 5
+    kWarpSmemTileNoCut = 4
 };
 
 
@@ -194,167 +192,7 @@ __global__ void grow_edge_chains_warp_kernel(
 }
 
 
-//> Incremental step (i): bundles + active-slot filter (--chain-smem-mode=filter-bundles)
-//>
-//> Same seed-parallel growth as the bundles warp kernel, but per f_run:
-//>   1) compact hyp+direction-active slots
-//>   2) cooperatively load only those pairwise bundles into a slot-indexed smem cache
-//>   3) grow only over active seeds / active remains
-//> Global scratch is the full working-grid layout (no scratch cut).
-__global__ void grow_edge_chains_filter_bundles_kernel(
-    int num_edges,
-    int slots_per_anchor,
-    int bundle_cells,
-    int group_max_sz,
-    int chain_width,
-    int sz_edge_data,
-    int warps_per_block,
-    size_t scratch_floats_per_anchor,
-    size_t scratch_uints_per_anchor,
-    const float *dev_edges,
-    const int *dev_neighbor_list,
-    const int *dev_neighbor_counts,
-    const float *dev_bundle_min_ks,
-    const float *dev_bundle_max_ks,
-    const unsigned char *dev_is_bundle_geometrically_valid,
-    float *dev_scratch_f,
-    unsigned *dev_scratch_u)
-{
-    extern __shared__ float smem[];
-
-    const int lane = threadIdx.x & 31;
-    const int warp_id = threadIdx.x >> 5;
-    const int anchor_id = static_cast<int>(blockIdx.x * warps_per_block + warp_id);
-    if (anchor_id >= num_edges) {
-        return;
-    }
-
-    const int num_of_neighbors = dev_neighbor_counts[anchor_id];
-    const int row_base = anchor_id * slots_per_anchor;
-    const size_t anchor_bundle_base =
-        static_cast<size_t>(anchor_id) * static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(bundle_cells);
-
-    const float *anchor_edge = dev_edges + anchor_id * sz_edge_data;
-    const float anchor_edge_x = anchor_edge[0];
-    const float anchor_edge_y = anchor_edge[1];
-    const float anchor_orient = anchor_edge[2];
-    const float anchor_cos = cosf(anchor_orient);
-    const float anchor_sin = sinf(anchor_orient);
-
-    const size_t lane_workspace_floats = static_cast<size_t>(2) * static_cast<size_t>(bundle_cells);
-    const size_t bundle_grid_floats = static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(bundle_cells);
-    const size_t floats_per_warp = (bundle_grid_floats * 2) + (static_cast<size_t>(32) * lane_workspace_floats);
-    float *warp_smem = smem + static_cast<size_t>(warp_id) * floats_per_warp;
-    float *smem_bundle_min = warp_smem;
-    float *smem_bundle_max = smem_bundle_min + bundle_grid_floats;
-    float *lane_ws_base = smem_bundle_max + bundle_grid_floats;
-    int *active_slots = reinterpret_cast<int *>(smem + static_cast<size_t>(warps_per_block) * floats_per_warp)
-                      + static_cast<size_t>(warp_id) * static_cast<size_t>(slots_per_anchor);
-
-    const float *src_min = dev_bundle_min_ks + anchor_bundle_base;
-    const float *src_max = dev_bundle_max_ks + anchor_bundle_base;
-
-    unsigned *candidate_chains = dev_scratch_u + static_cast<size_t>(anchor_id) * scratch_uints_per_anchor;
-    float *seed_working_min = dev_scratch_f + static_cast<size_t>(anchor_id) * scratch_floats_per_anchor;
-    float *seed_working_max = seed_working_min
-                            + static_cast<size_t>(2) * static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(bundle_cells);
-
-    float *lane_ws = lane_ws_base + static_cast<size_t>(lane) * lane_workspace_floats;
-    float *work_min_ks = lane_ws;
-    float *work_max_ks = lane_ws + bundle_cells;
-
-    for (int f_run = 0; f_run < 2; f_run++) {
-        unsigned *candidate_chains_frun = candidate_chains
-            + static_cast<size_t>(f_run) * static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(chain_width);
-        float *seed_working_min_frun = seed_working_min
-            + static_cast<size_t>(f_run) * static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(bundle_cells);
-        float *seed_working_max_frun = seed_working_max
-            + static_cast<size_t>(f_run) * static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(bundle_cells);
-
-        for (int seed_idx = lane; seed_idx < slots_per_anchor; seed_idx += 32) {
-            unsigned *cand_row = candidate_chains_frun + static_cast<size_t>(seed_idx) * static_cast<size_t>(chain_width);
-            for (int j = 0; j < chain_width; j++) {
-                cand_row[j] = 0;
-            }
-        }
-        __syncwarp();
-
-        int n_local = 0;
-        if (lane == 0) {
-            for (int slot = 0; slot < num_of_neighbors; slot++) {
-                if (neighbor_slot_passes_grow_filter(
-                        f_run, slot, row_base, sz_edge_data,
-                        anchor_edge_x, anchor_edge_y, anchor_cos, anchor_sin,
-                        dev_edges, dev_neighbor_list, dev_is_bundle_geometrically_valid)) {
-                    active_slots[n_local++] = slot;
-                }
-            }
-        }
-        __syncwarp();
-        const int n_active = __shfl_sync(0xffffffff, n_local, 0);
-
-        //> Load only active pairwise bundles into the slot-indexed shared cache.
-        for (int a = 0; a < n_active; a++) {
-            const int slot = active_slots[a];
-            coop_load_pairwise_bundle(
-                slot, bundle_cells, lane, src_min, src_max,
-                smem_bundle_min + static_cast<size_t>(slot) * static_cast<size_t>(bundle_cells),
-                smem_bundle_max + static_cast<size_t>(slot) * static_cast<size_t>(bundle_cells));
-        }
-        __syncwarp();
-
-        for (int ai = lane; ai < n_active; ai += 32) {
-            const int seed_slot = active_slots[ai];
-            unsigned *cand_row = candidate_chains_frun + static_cast<size_t>(seed_slot) * static_cast<size_t>(chain_width);
-            float *out_min = seed_working_min_frun + static_cast<size_t>(seed_slot) * static_cast<size_t>(bundle_cells);
-            float *out_max = seed_working_max_frun + static_cast<size_t>(seed_slot) * static_cast<size_t>(bundle_cells);
-
-            const float *seed_min = smem_bundle_min + static_cast<size_t>(seed_slot) * static_cast<size_t>(bundle_cells);
-            const float *seed_max = smem_bundle_max + static_cast<size_t>(seed_slot) * static_cast<size_t>(bundle_cells);
-            copy_bundle(bundle_cells, work_min_ks, work_max_ks, seed_min, seed_max);
-            cand_row[0] = static_cast<unsigned>(anchor_id);
-            int chain_len = 1;
-
-            for (int a = 0; a < n_active; a++) {
-                const int remain_slot = active_slots[a];
-                const int remain_id = dev_neighbor_list[row_base + remain_slot];
-                if (remain_slot == seed_slot) {
-                    if (chain_len < group_max_sz) {
-                        cand_row[chain_len++] = static_cast<unsigned>(remain_id);
-                    }
-                }
-                else {
-                    const float *cand_min = smem_bundle_min + static_cast<size_t>(remain_slot) * static_cast<size_t>(bundle_cells);
-                    const float *cand_max = smem_bundle_max + static_cast<size_t>(remain_slot) * static_cast<size_t>(bundle_cells);
-                    if (intersect_working_with_candidate(
-                            bundle_cells, work_min_ks, work_max_ks, cand_min, cand_max)) {
-                        if (chain_len < group_max_sz) {
-                            cand_row[chain_len++] = static_cast<unsigned>(remain_id);
-                        }
-                    }
-                }
-                if (chain_len >= group_max_sz) {
-                    break;
-                }
-            }
-
-            cand_row[group_max_sz] = static_cast<unsigned>(chain_len);
-            if (chain_len > 2) {
-                for (int b = 0; b < bundle_cells; b++) {
-                    out_min[b] = work_min_ks[b];
-                    out_max[b] = work_max_ks[b];
-                }
-            }
-        }
-        __syncwarp();
-    }
-
-    (void)scratch_uints_per_anchor;
-    (void)anchor_orient;
-}
-
-
-//> Incremental step (ii): filter + streamed tile waves, full scratch (--chain-smem-mode=tile-nocut)
+//> Streamed tile waves without scratch cut (--chain-smem-mode=tile-nocut)
 //>
 //> Same inverted remain-outer / wave-of-W-seeds schedule as the tile kernel, including
 //> active-slot compaction, but persists full final working grids (no k_max/k_min scratch cut).
@@ -399,8 +237,7 @@ __global__ void grow_edge_chains_tile_nocut_kernel(
     const float anchor_cos = cosf(anchor_orient);
     const float anchor_sin = sinf(anchor_orient);
 
-    const size_t floats_per_warp =
-        static_cast<size_t>(tile_workspaces + 1) * static_cast<size_t>(2) * static_cast<size_t>(bundle_cells);
+    const size_t floats_per_warp = static_cast<size_t>(tile_workspaces + 1) * static_cast<size_t>(2) * static_cast<size_t>(bundle_cells);
     float *s_warp_f = smem + static_cast<size_t>(warp_id) * floats_per_warp;
     float *s_tile_min = s_warp_f + static_cast<size_t>(tile_workspaces) * static_cast<size_t>(2) * static_cast<size_t>(bundle_cells);
     float *s_tile_max = s_tile_min + bundle_cells;
@@ -412,8 +249,7 @@ __global__ void grow_edge_chains_tile_nocut_kernel(
 
     unsigned *candidate_chains = dev_scratch_u + static_cast<size_t>(anchor_id) * scratch_uints_per_anchor;
     float *seed_working_min = dev_scratch_f + static_cast<size_t>(anchor_id) * scratch_floats_per_anchor;
-    float *seed_working_max = seed_working_min
-                            + static_cast<size_t>(2) * static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(bundle_cells);
+    float *seed_working_max = seed_working_min + static_cast<size_t>(2) * static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(bundle_cells);
 
     for (int f_run = 0; f_run < 2; f_run++) {
         unsigned *candidate_chains_frun = candidate_chains

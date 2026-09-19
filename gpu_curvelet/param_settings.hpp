@@ -84,7 +84,7 @@ inline void print_usage(const char *prog)
         << "  --neighbor-warps-per-block <N>  Warp-per-anchor discover: warps/block (default: 1)\n"
         << "  --bundle-warps-per-block <N>  Pairwise bundle formation: warps/block (default: 4)\n"
         << "  --chain-warps-per-block <N>  Warp-per-anchor chain growth: warps/block (default: 1)\n"
-        << "  --chain-smem-mode <mode>   Warp shared cache: auto | none | lane | bundles | filter-bundles | tile-nocut | tile (default: auto)\n"
+        << "  --chain-smem-mode <mode>   Warp shared cache: auto | none | lane | bundles | tile-nocut | tile (default: auto)\n"
         << "  --chain-tile-workspaces <N>  Working grids per warp in tile / tile-nocut (default: 8, max 32)\n"
         << "  --dedup-threads-per-block <N>  Deduplication threads/block (default: 128)\n"
         << "  --max-candidates <N>       Max neighbors staged per anchor (default: 64)\n"

@@ -24,7 +24,7 @@ size_t warp_smem_floats_per_warp(int smem_mode, int bundle_cells, int slots_per_
     if (smem_mode == kWarpSmemLaneWs) {
         return lane_ws;
     }
-    if (smem_mode == kWarpSmemLaneWsAndBundles || smem_mode == kWarpSmemFilterBundles) {
+    if (smem_mode == kWarpSmemLaneWsAndBundles) {
         const size_t bundles = static_cast<size_t>(slots_per_anchor)
                              * static_cast<size_t>(2)
                              * static_cast<size_t>(bundle_cells);
@@ -44,12 +44,6 @@ size_t warp_smem_bytes_for_mode(
         const size_t floats_per_warp =
             static_cast<size_t>(tile_workspaces + 1) * static_cast<size_t>(2) * static_cast<size_t>(bundle_cells);
         return static_cast<size_t>(warps_per_block) * floats_per_warp * sizeof(float)
-             + static_cast<size_t>(warps_per_block) * static_cast<size_t>(slots_per_anchor) * sizeof(int);
-    }
-    if (smem_mode == kWarpSmemFilterBundles) {
-        const size_t floats = warp_smem_floats_per_warp(smem_mode, bundle_cells, slots_per_anchor)
-                            * static_cast<size_t>(warps_per_block);
-        return floats * sizeof(float)
              + static_cast<size_t>(warps_per_block) * static_cast<size_t>(slots_per_anchor) * sizeof(int);
     }
     const size_t floats = warp_smem_floats_per_warp(smem_mode, bundle_cells, slots_per_anchor)
@@ -83,8 +77,7 @@ bool query_max_dynamic_shared_bytes(size_t &max_dyn_bytes)
 //>   "lane"           — mode 1; keep requested warps/block (fail if too large)
 //>   "bundles"        — mode 2; keep requested warps/block (fail if too large)
 //>   "tile"           — mode 3; streamed tile + W workspaces + scratch cut
-//>   "filter-bundles" — mode 4; active-slot filter + active bundle cache (full scratch)
-//>   "tile-nocut"     — mode 5; streamed tile + W workspaces, full scratch (no cut)
+//>   "tile-nocut"     — mode 4; streamed tile + W workspaces, full scratch (no cut)
 bool choose_warp_smem_config(
     int bundle_cells,
     int slots_per_anchor,
@@ -163,27 +156,6 @@ bool choose_warp_smem_config(
         }
         fprintf(stderr, "choose_warp_smem_config: could not query device shared-memory limit\n");
         return false;
-    }
-
-    if (chain_smem_mode == "filter-bundles") {
-        cudacheck(cudaFuncSetAttribute(grow_edge_chains_filter_bundles_kernel,
-                                       cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                       static_cast<int>(max_dyn_bytes)));
-        const size_t bytes = warp_smem_bytes_for_mode(
-            kWarpSmemFilterBundles, bundle_cells, slots_per_anchor,
-            requested_warps_per_block, tile_workspaces);
-        if (bytes > max_dyn_bytes) {
-            fprintf(stderr,
-                    "choose_warp_smem_config: --chain-smem-mode=filter-bundles needs %zu bytes "
-                    "(%d warps/block) but device max dynamic shared is %zu bytes; "
-                    "lower --chain-warps-per-block\n",
-                    bytes, requested_warps_per_block, max_dyn_bytes);
-            return false;
-        }
-        smem_mode = kWarpSmemFilterBundles;
-        warps_per_block = requested_warps_per_block;
-        smem_bytes = bytes;
-        return true;
     }
 
     //> Request max dynamic shared memory on the kernel that will actually launch
@@ -276,7 +248,7 @@ void compute_scratch_sizes(
     }
     else {
         //> Full working min/max for forward and backward growth directions
-        //> (bundles / filter-bundles / tile-nocut / lane / none)
+        //> (bundles / tile-nocut / lane / none)
         floats_per_anchor = static_cast<size_t>(4) * static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(bundle_cells);
         //> Lane workspaces stay in global memory only when shared caching is unavailable
         if (smem_mode == kWarpSmemNone) {
@@ -338,26 +310,6 @@ void launch_grow_edge_chains_warp(
             params.edge_data_sz,
             warps_per_block,
             storage.tile_workspaces,
-            storage.scratch_floats_per_anchor,
-            storage.scratch_uints_per_anchor,
-            graph.dev_edges,
-            graph.dev_neighbor_list,
-            graph.dev_neighbor_counts,
-            bundles.dev_bundle_min_ks,
-            bundles.dev_bundle_max_ks,
-            bundles.dev_hyp_look_edge,
-            storage.dev_scratch_f,
-            storage.dev_scratch_u);
-    }
-    else if (storage.warp_smem_mode == kWarpSmemFilterBundles) {
-        grow_edge_chains_filter_bundles_kernel<<<grow_num_blocks, grow_threads_per_block, storage.warp_smem_bytes>>>(
-            graph.num_edges,
-            storage.slots_per_anchor,
-            storage.bundle_cells,
-            storage.group_max_sz,
-            storage.chain_width,
-            params.edge_data_sz,
-            warps_per_block,
             storage.scratch_floats_per_anchor,
             storage.scratch_uints_per_anchor,
             graph.dev_edges,
@@ -573,9 +525,6 @@ bool gpu_grow_edge_chains_main(
     }
     else if (storage.warp_smem_mode == kWarpSmemTileNoCut) {
         profile_lap(profiler, TimerCategory::Kernel, "grow_edge_chains_tile_nocut (phase 1)");
-    }
-    else if (storage.warp_smem_mode == kWarpSmemFilterBundles) {
-        profile_lap(profiler, TimerCategory::Kernel, "grow_edge_chains_filter_bundles (phase 1)");
     }
     else {
         profile_lap(profiler, TimerCategory::Kernel, "grow_edge_chains_warp (phase 1)");
