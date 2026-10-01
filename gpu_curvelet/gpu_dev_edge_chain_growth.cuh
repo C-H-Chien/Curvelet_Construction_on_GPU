@@ -13,6 +13,8 @@ slot_active_for_run(int f_run, float along)
 }
 
 //> Warp-cooperative load of one pairwise min/max grid. All lanes must call this.
+//> kUseLdg loads through the read-only data cache. In this case, callers must not write those grids in the same kernel.
+template <bool kUseLdg = false>
 __device__ __forceinline__ void
 coop_load_pairwise_bundle(
     int slot,
@@ -26,11 +28,12 @@ coop_load_pairwise_bundle(
     const float *smin = src_min + static_cast<size_t>(slot) * static_cast<size_t>(bundle_cells);
     const float *smax = src_max + static_cast<size_t>(slot) * static_cast<size_t>(bundle_cells);
     for (int i = lane; i < bundle_cells; i += 32) {
-        tile_min[i] = smin[i];
-        tile_max[i] = smax[i];
+        tile_min[i] = (kUseLdg) ? __ldg(smin + i) : smin[i];
+        tile_max[i] = (kUseLdg) ? __ldg(smax + i) : smax[i];
     }
 }
 
+template <bool kUseLdg = false>
 __device__ __forceinline__ float
 neighbor_along_anchor(
     int neighbor_id,
@@ -42,9 +45,14 @@ neighbor_along_anchor(
     const float *dev_edges)
 {
     const float *nbr = dev_edges + neighbor_id * sz_edge_data;
-    return (nbr[0] - anchor_edge_x) * anchor_cos + (nbr[1] - anchor_edge_y) * anchor_sin;
+    float nbr_x;
+    float nbr_y;
+    nbr_x = (kUseLdg) ? __ldg(nbr + 0) : nbr[0];
+    nbr_y = (kUseLdg) ? __ldg(nbr + 1) : nbr[1];
+    return (nbr_x - anchor_edge_x) * anchor_cos + (nbr_y - anchor_edge_y) * anchor_sin;
 }
 
+template <bool kUseLdg = false>
 __device__ __forceinline__ bool
 neighbor_slot_passes_grow_filter(
     int f_run,
@@ -59,17 +67,22 @@ neighbor_slot_passes_grow_filter(
     const int *dev_neighbor_list,
     const unsigned char *dev_is_bundle_geometrically_valid)
 {
-    const int neighbor_id = dev_neighbor_list[row_base + slot];
+    int neighbor_id;
+    neighbor_id = (kUseLdg) ? __ldg(dev_neighbor_list + row_base + slot) : dev_neighbor_list[row_base + slot];
     if (neighbor_id < 0) {
         return false;
     }
-    if (!dev_is_bundle_geometrically_valid[static_cast<size_t>(row_base) + static_cast<size_t>(slot)]) {
+    const unsigned char *valid = dev_is_bundle_geometrically_valid + static_cast<size_t>(row_base) + static_cast<size_t>(slot);
+    unsigned char is_valid;
+    is_valid = (kUseLdg) ? __ldg(valid) : *valid;
+    if (!is_valid) {
         return false;
     }
-    const float along = neighbor_along_anchor(
+    const float along = neighbor_along_anchor<kUseLdg>(
         neighbor_id, sz_edge_data,
         anchor_edge_x, anchor_edge_y, anchor_cos, anchor_sin,
         dev_edges);
+
     return slot_active_for_run(f_run, along);
 }
 
