@@ -366,6 +366,7 @@ __global__ void grow_edge_chains_tile_nocut_kernel(
 //> Chain order matches style-2: compact active slots in ascending slot (distance) order,
 //> append the seed without re-intersecting, stop a seed at group_max_sz.
 //> Persists compact scratch: length column, and k_max/k_min if len > 2 (scratch-traffic cut).
+//> Read-only global inputs use __ldg (read-only data cache) but it is set to false as default
 __global__ void grow_edge_chains_tile_kernel(
     int num_edges,
     int slots_per_anchor,
@@ -381,14 +382,14 @@ __global__ void grow_edge_chains_tile_kernel(
     int tile_workspaces,
     size_t scratch_floats_per_anchor,
     size_t scratch_uints_per_anchor,
-    const float *dev_edges,
-    const int *dev_neighbor_list,
-    const int *dev_neighbor_counts,
-    const float *dev_bundle_min_ks,
-    const float *dev_bundle_max_ks,
-    const unsigned char *dev_is_bundle_geometrically_valid,
-    float *dev_scratch_f,
-    unsigned *dev_scratch_u)
+    const float *__restrict__ dev_edges,
+    const int *__restrict__ dev_neighbor_list,
+    const int *__restrict__ dev_neighbor_counts,
+    const float *__restrict__ dev_bundle_min_ks,
+    const float *__restrict__ dev_bundle_max_ks,
+    const unsigned char *__restrict__ dev_is_bundle_geometrically_valid,
+    float *__restrict__ dev_scratch_f,
+    unsigned *__restrict__ dev_scratch_u)
 {
     extern __shared__ float smem[];
 
@@ -399,14 +400,14 @@ __global__ void grow_edge_chains_tile_kernel(
         return;
     }
 
-    const int num_of_neighbors = dev_neighbor_counts[anchor_id];
+    const int num_of_neighbors = __ldg(dev_neighbor_counts + anchor_id);
     const int row_base = anchor_id * slots_per_anchor;
     const size_t anchor_bundle_base = static_cast<size_t>(anchor_id) * static_cast<size_t>(slots_per_anchor) * static_cast<size_t>(bundle_cells);
 
     const float *anchor_edge = dev_edges + anchor_id * sz_edge_data;
-    const float anchor_edge_x = anchor_edge[0];
-    const float anchor_edge_y = anchor_edge[1];
-    const float anchor_orient = anchor_edge[2];
+    const float anchor_edge_x = __ldg(anchor_edge + 0);
+    const float anchor_edge_y = __ldg(anchor_edge + 1);
+    const float anchor_orient = __ldg(anchor_edge + 2);
     const float anchor_cos = cosf(anchor_orient);
     const float anchor_sin = sinf(anchor_orient);
 
@@ -437,7 +438,7 @@ __global__ void grow_edge_chains_tile_kernel(
         int n_local = 0;
         if (lane == 0) {
             for (int slot = 0; slot < num_of_neighbors; slot++) {
-                if (neighbor_slot_passes_grow_filter(
+                if (neighbor_slot_passes_grow_filter<false>(
                         f_run, slot, row_base, sz_edge_data,
                         anchor_edge_x, anchor_edge_y, anchor_cos, anchor_sin,
                         dev_edges, dev_neighbor_list, dev_is_bundle_geometrically_valid)) {
@@ -464,7 +465,7 @@ __global__ void grow_edge_chains_tile_kernel(
             for (int s = 0; s < wave_n; s++) {
                 const int seed_slot = active_slots[wave_base + s];
                 //> Cooperative load the pairwise min/max grids from global memory into the tile [s_tile_min, s_tile_max]
-                coop_load_pairwise_bundle(seed_slot, bundle_cells, lane, src_min, src_max, s_tile_min, s_tile_max);
+                coop_load_pairwise_bundle<false>(seed_slot, bundle_cells, lane, src_min, src_max, s_tile_min, s_tile_max);
                 __syncwarp();
 
                 //> copy the tile [s_tile_min, s_tile_max] to the working grids [s_work_min, s_work_max]
@@ -483,10 +484,10 @@ __global__ void grow_edge_chains_tile_kernel(
             for (int a = 0; a < n_active; a++) {
                 const int remain_slot = active_slots[a];
                 //> Cooperative load the pairwise min/max grids from global memory again into the tile [s_tile_min, s_tile_max] for the remain (staging) slot
-                coop_load_pairwise_bundle(remain_slot, bundle_cells, lane, src_min, src_max, s_tile_min, s_tile_max);
+                coop_load_pairwise_bundle<false>(remain_slot, bundle_cells, lane, src_min, src_max, s_tile_min, s_tile_max);
                 __syncwarp();
                 if (seed_open) {
-                    const int remain_id = dev_neighbor_list[row_base + remain_slot];
+                    const int remain_id = __ldg(dev_neighbor_list + row_base + remain_slot);
 
                     //> If the remain slot is the same as the my_seed_slot, append the remain_id to the candidate chain
                     //> otherwise, intersect the working grids with the tile and append the remain_id to the candidate chain if the edge chain size permits
